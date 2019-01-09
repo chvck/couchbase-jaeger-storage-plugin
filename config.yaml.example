@@ -1,0 +1,5 @@
+couchbase:
+  bucket: default
+  username: Administrator
+  password: password
+  connString: couchbase://localhost

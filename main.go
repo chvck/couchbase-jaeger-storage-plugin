@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,37 +28,39 @@ import (
 
 var configPath string
 
-const (
+var (
 	querySpanByTraceID = `
 SELECT trace_id, span_id, parent_id, operation_name, flags, start_time, duration, tags, logs, refs, process
-FROM default
+FROM %s
 WHERE trace_id = ? AND type="span"`
-	queryServiceNames   = "SELECT DISTINCT process.service_name from default"
-	queryOperationNames = "SELECT DISTINCT operation_name from default"
+	queryServiceNames   = `SELECT DISTINCT process.service_name from %s where type="span"`
+	queryOperationNames = `SELECT DISTINCT operation_name from %s where type="span"`
 	queryByTag          = `
 		SELECT DISTINCT trace_id
-		FROM default
+		FROM %s
 		WHERE service_name = ? AND tag_key = ? AND tag_value = ? and start_time > ? and start_time < ? AND type="tag"
 		ORDER BY start_time DESC
 		LIMIT ?`
 	queryByServiceName = `
 		SELECT DISTINCT trace_id
-		FROM default
+		FROM %s
 		WHERE process.service_name = ? AND start_time > ? AND start_time < ? AND type="span"
 		ORDER BY start_time DESC
 		LIMIT ?`
 	queryByServiceAndOperationName = `
 		SELECT DISTINCT trace_id
-		FROM default
+		FROM %s
 		WHERE process.service_name = ? AND operation_name = ? AND start_time > ? AND start_time < ? AND type="span"
 		ORDER BY start_time DESC
 		LIMIT ?`
 	queryByDuration = `
 		SELECT DISTINCT trace_id
-		FROM default
+		FROM %s
 		WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND type="span"
 		LIMIT ?`
+)
 
+const (
 	maximumTagKeyOrValueSize = 256
 	defaultNumTraces         = 100
 )
@@ -95,35 +96,56 @@ func main() {
 	flag.StringVar(&configPath, "config", "", "A path to the plugin's configuration file")
 	flag.Parse()
 
+	v := viper.New()
 	if configPath != "" {
-		viper.SetConfigFile(path.Base(configPath))
-		viper.AddConfigPath(path.Dir(configPath))
+		v.SetConfigFile(configPath)
 	}
 
-	v := viper.New()
-	v.AutomaticEnv()
-	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
+	v.SetDefault(bucketName, "default")
+	v.SetDefault(connStr, "couchbase://localhost")
+
+	if configPath != "" {
+		err := v.ReadInConfig()
+		if err != nil {
+			fmt.Println(err)
+			panic(err)
+		}
+	}
+
+	var options Options
+	options.InitFromViper(v)
 
 	gocb.SetLogger(gocb.VerboseStdioLogger())
-	cluster, err := gocb.Connect("couchbase://10.112.190.101")
+	cluster, err := gocb.Connect(options.ConnStr)
 	if err != nil {
+		fmt.Println(err)
 		panic(err)
 	}
 
 	err = cluster.Authenticate(gocb.PasswordAuthenticator{
-		Username: "Administrator",
-		Password: "password",
+		Username: options.Username,
+		Password: options.Password,
 	})
 	if err != nil {
+		fmt.Println(err)
 		panic(err)
 	}
 
-	bucket, err := cluster.OpenBucket("default", "")
+	bucket, err := cluster.OpenBucket(options.BucketName, "")
 	if err != nil {
+		fmt.Println(err)
 		panic(err)
 	}
 
 	store := couchbaseStore{bucket: bucket}
+
+	querySpanByTraceID = fmt.Sprintf(querySpanByTraceID, options.BucketName)
+	queryServiceNames = fmt.Sprintf(queryServiceNames, options.BucketName)
+	queryOperationNames = fmt.Sprintf(queryOperationNames, options.BucketName)
+	queryByTag = fmt.Sprintf(queryByTag, options.BucketName)
+	queryByServiceName = fmt.Sprintf(queryByServiceName, options.BucketName)
+	queryByServiceAndOperationName = fmt.Sprintf(queryByServiceAndOperationName, options.BucketName)
+	queryByDuration = fmt.Sprintf(queryByDuration, options.BucketName)
 
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: plugin.HandshakeConfig{
@@ -192,7 +214,9 @@ func (cs *couchbaseStore) GetServices(ctx context.Context) ([]string, error) {
 	}
 	var serviceNames []string
 	for result.Next(&serviceName) {
-		serviceNames = append(serviceNames, serviceName.ServiceName)
+		if serviceName.ServiceName != "" {
+			serviceNames = append(serviceNames, serviceName.ServiceName)
+		}
 	}
 
 	err = result.Close()
