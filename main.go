@@ -58,6 +58,7 @@ WHERE trace_id = ? AND type="span"`
 		FROM %s
 		WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND type="span"
 		LIMIT ?`
+	depsSelectStmt = "SELECT ts, dependencies FROM %s WHERE ts >= ? AND ts < ?"
 )
 
 const (
@@ -146,6 +147,7 @@ func main() {
 	queryByServiceName = fmt.Sprintf(queryByServiceName, options.BucketName)
 	queryByServiceAndOperationName = fmt.Sprintf(queryByServiceAndOperationName, options.BucketName)
 	queryByDuration = fmt.Sprintf(queryByDuration, options.BucketName)
+	depsSelectStmt = fmt.Sprintf(depsSelectStmt, options.BucketName)
 
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: plugin.HandshakeConfig{
@@ -167,8 +169,31 @@ type couchbaseStore struct {
 	bucket *gocb.Bucket
 }
 
-func (*couchbaseStore) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
-	return nil, nil
+type dependency struct {
+	Deps []model.DependencyLink `json:"dependencies"`
+	Ts   time.Time              `json:"ts"`
+}
+
+func (cs *couchbaseStore) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
+	query := gocb.NewN1qlQuery(depsSelectStmt).AdHoc(false)
+	result, err := cs.bucket.ExecuteN1qlQuery(query, []interface{}{endTs.Add(-1 * lookback), endTs})
+	if err != nil {
+		return nil, errors.Wrap(err, "Error reading dependencies from storage")
+	}
+
+	var deps []model.DependencyLink
+	var resDep dependency
+	for result.Next(&resDep) {
+		for _, dep := range resDep.Deps {
+			deps = append(deps, dep)
+		}
+	}
+
+	if err = result.Close(); err != nil {
+		return nil, errors.Wrap(err, "Error reading dependencies from storage")
+	}
+
+	return deps, nil
 }
 
 func (cs *couchbaseStore) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
