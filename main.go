@@ -10,8 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jaegertracing/jaeger/plugin/storage/cassandra/spanstore/dbmodel"
-
 	"github.com/pkg/errors"
 
 	"gopkg.in/couchbase/gocb.v1"
@@ -30,11 +28,11 @@ var configPath string
 
 var (
 	querySpanByTraceID = `
-SELECT trace_id, span_id, parent_id, operation_name, flags, start_time, duration, tags, logs, refs, process
+SELECT trace_id, span_id, operation_name, flags, start_time, duration, tags, logs, references, process
 FROM %s
 WHERE trace_id = ? AND type="span"`
 	queryServiceNames   = `SELECT DISTINCT process.service_name from %s where type="span"`
-	queryOperationNames = `SELECT DISTINCT operation_name from %s where type="span"`
+	queryOperationNames = `SELECT DISTINCT operation_name from %s where process.service_name = ? AND type="span"`
 	queryByTag          = `
 		SELECT DISTINCT trace_id
 		FROM %s
@@ -66,12 +64,54 @@ const (
 	defaultNumTraces         = 100
 )
 
-type Span struct {
-	*model.Span
+type SpanRef struct {
 	TraceID [16]byte `json:"trace_id"`
 	SpanID  uint64   `json:"span_id"`
-	Type    string   `json:"type"`
+	RefType int32    `json:"ref_type"`
 }
+
+type Span struct {
+	OperationName string           `json:"operation_name,omitempty"`
+	References    []SpanRef        `json:"references"`
+	Flags         model.Flags      `json:"flags"`
+	StartTime     time.Time        `json:"start_time"`
+	Duration      time.Duration    `json:"duration"`
+	Tags          []model.KeyValue `json:"tags"`
+	Logs          []model.Log      `json:"logs"`
+	Process       *model.Process   `json:"process,omitempty"`
+	ProcessID     string           `json:"process_id,omitempty"`
+	Warnings      []string         `json:"warnings,omitempty"`
+	TraceID       [16]byte         `json:"trace_id"`
+	SpanID        uint64           `json:"span_id"`
+	Type          string           `json:"type"`
+}
+
+type couchbaseStore struct {
+	bucket *gocb.Bucket
+}
+
+type dependency struct {
+	Deps []model.DependencyLink `json:"dependencies"`
+	Ts   time.Time              `json:"ts"`
+}
+
+type Tag struct {
+	TagInsertion
+	TraceID   [16]byte  `json:"trace_id"`
+	SpanID    uint64    `json:"span_id"`
+	StartTime time.Time `json:"start_time"`
+	Type      string    `json:"type"`
+}
+
+type TagInsertion struct {
+	ServiceName string `json:"service_name"`
+	TagKey      string `json:"tag_key"`
+	TagValue    string `json:"tag_value"`
+}
+
+type TraceID [16]byte
+
+type UniqueTraceIDs map[TraceID]struct{}
 
 var (
 	// ErrServiceNameNotSet occurs when attempting to query with an empty service name
@@ -165,15 +205,6 @@ func main() {
 	})
 }
 
-type couchbaseStore struct {
-	bucket *gocb.Bucket
-}
-
-type dependency struct {
-	Deps []model.DependencyLink `json:"dependencies"`
-	Ts   time.Time              `json:"ts"`
-}
-
 func (cs *couchbaseStore) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
 	query := gocb.NewN1qlQuery(depsSelectStmt).AdHoc(false)
 	result, err := cs.bucket.ExecuteN1qlQuery(query, []interface{}{endTs.Add(-1 * lookback), endTs})
@@ -211,9 +242,28 @@ func (cs *couchbaseStore) GetTrace(ctx context.Context, traceID model.TraceID) (
 	var trace model.Trace
 	var traceSpan Span
 	for result.Next(&traceSpan) {
-		traceSpan.Span.SpanID = model.SpanID(traceSpan.SpanID)
-		traceSpan.Span.TraceID = traceIDToDomain(traceSpan.TraceID)
-		trace.Spans = append(trace.Spans, traceSpan.Span)
+		modelSpan := model.Span{
+			TraceID:       traceIDToDomain(traceSpan.TraceID),
+			SpanID:        model.SpanID(traceSpan.SpanID),
+			Duration:      traceSpan.Duration,
+			StartTime:     traceSpan.StartTime,
+			OperationName: traceSpan.OperationName,
+			ProcessID:     traceSpan.ProcessID,
+			Flags:         traceSpan.Flags,
+			Logs:          traceSpan.Logs,
+			Process:       traceSpan.Process,
+			Warnings:      traceSpan.Warnings,
+			Tags:          traceSpan.Tags,
+		}
+		for _, ref := range traceSpan.References {
+			modelSpan.References = append(modelSpan.References, model.SpanRef{
+				SpanID:  model.SpanID(ref.SpanID),
+				TraceID: traceIDToDomain(ref.TraceID),
+				RefType: model.SpanRefType(ref.RefType),
+			})
+		}
+
+		trace.Spans = append(trace.Spans, &modelSpan)
 	}
 
 	err = result.Close()
@@ -254,7 +304,7 @@ func (cs *couchbaseStore) GetServices(ctx context.Context) ([]string, error) {
 
 func (cs *couchbaseStore) GetOperations(ctx context.Context, service string) ([]string, error) {
 	query := gocb.NewN1qlQuery(queryOperationNames)
-	result, err := cs.bucket.ExecuteN1qlQuery(query, nil)
+	result, err := cs.bucket.ExecuteN1qlQuery(query, []interface{}{service})
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +370,7 @@ func (cs *couchbaseStore) FindTraceIDs(ctx context.Context, traceQuery *spanstor
 	return traceIDs, nil
 }
 
-func (cs *couchbaseStore) findTraceIDs(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) (dbmodel.UniqueTraceIDs, error) {
+func (cs *couchbaseStore) findTraceIDs(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	if traceQuery.DurationMin != 0 || traceQuery.DurationMax != 0 {
 		return cs.queryByDuration(ctx, traceQuery)
 	}
@@ -335,7 +385,7 @@ func (cs *couchbaseStore) findTraceIDs(ctx context.Context, traceQuery *spanstor
 			if err != nil {
 				return nil, err
 			}
-			return IntersectTraceIDs([]dbmodel.UniqueTraceIDs{
+			return IntersectTraceIDs([]UniqueTraceIDs{
 				traceIds,
 				tagTraceIds,
 			}), nil
@@ -348,11 +398,11 @@ func (cs *couchbaseStore) findTraceIDs(ctx context.Context, traceQuery *spanstor
 	return cs.queryByService(ctx, traceQuery)
 }
 
-func (cs *couchbaseStore) queryByTagsAndLogs(ctx context.Context, tq *spanstore.TraceQueryParameters) (dbmodel.UniqueTraceIDs, error) {
+func (cs *couchbaseStore) queryByTagsAndLogs(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := startSpanForQuery(ctx, "queryByTagsAndLogs", queryByTag)
 	defer span.Finish()
 
-	results := make([]dbmodel.UniqueTraceIDs, 0, len(tq.Tags))
+	results := make([]UniqueTraceIDs, 0, len(tq.Tags))
 	for k, v := range tq.Tags {
 		childSpan, _ := opentracing.StartSpanFromContext(ctx, "queryByTag")
 		childSpan.LogFields(otlog.String("tag.key", k), otlog.String("tag.value", v))
@@ -376,7 +426,7 @@ func (cs *couchbaseStore) queryByTagsAndLogs(ctx context.Context, tq *spanstore.
 	return IntersectTraceIDs(results), nil
 }
 
-func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) (dbmodel.UniqueTraceIDs, error) {
+func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := startSpanForQuery(ctx, "queryByDuration", queryByDuration)
 	defer span.Finish()
 
@@ -398,7 +448,7 @@ func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spans
 	return cs.executeQuery(span, query, params)
 }
 
-func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq *spanstore.TraceQueryParameters) (dbmodel.UniqueTraceIDs, error) {
+func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := startSpanForQuery(ctx, "queryByServiceNameAndOperation", queryByServiceAndOperationName)
 	defer span.Finish()
 	query := gocb.NewN1qlQuery(queryByServiceAndOperationName)
@@ -412,7 +462,7 @@ func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq
 	return cs.executeQuery(span, query, params)
 }
 
-func (cs *couchbaseStore) queryByService(ctx context.Context, tq *spanstore.TraceQueryParameters) (dbmodel.UniqueTraceIDs, error) {
+func (cs *couchbaseStore) queryByService(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := startSpanForQuery(ctx, "queryByService", queryByServiceName)
 	defer span.Finish()
 	query := gocb.NewN1qlQuery(queryByServiceName)
@@ -425,12 +475,12 @@ func (cs *couchbaseStore) queryByService(ctx context.Context, tq *spanstore.Trac
 	return cs.executeQuery(span, query, params)
 }
 
-func (cs *couchbaseStore) executeQuery(span opentracing.Span, query *gocb.N1qlQuery, params []interface{}) (dbmodel.UniqueTraceIDs, error) {
+func (cs *couchbaseStore) executeQuery(span opentracing.Span, query *gocb.N1qlQuery, params []interface{}) (UniqueTraceIDs, error) {
 	// start := time.Now()
 	var traceID struct {
 		TraceID [16]byte `json:"trace_id"`
 	}
-	traceIDs := make(dbmodel.UniqueTraceIDs)
+	traceIDs := make(UniqueTraceIDs)
 	result, err := cs.bucket.ExecuteN1qlQuery(query, params)
 	if err != nil {
 		logErrorToSpan(span, err)
@@ -457,11 +507,29 @@ func (cs *couchbaseStore) executeQuery(span opentracing.Span, query *gocb.N1qlQu
 }
 
 func (cs *couchbaseStore) WriteSpan(span *model.Span) error {
-	dbSpan := Span{Span: span}
-	dbSpan.TraceID = traceIDFromDomain(span.TraceID)
-	dbSpan.SpanID = uint64(span.SpanID)
+	dbSpan := Span{
+		TraceID:       traceIDFromDomain(span.TraceID),
+		SpanID:        uint64(span.SpanID),
+		Duration:      span.Duration,
+		StartTime:     span.StartTime,
+		OperationName: span.OperationName,
+		ProcessID:     span.ProcessID,
+		Flags:         span.Flags,
+		Logs:          span.Logs,
+		Process:       span.Process,
+		Warnings:      span.Warnings,
+		Tags:          span.Tags,
+	}
+	for _, ref := range span.References {
+		dbSpan.References = append(dbSpan.References, SpanRef{
+			SpanID:  uint64(ref.SpanID),
+			TraceID: traceIDFromDomain(ref.TraceID),
+			RefType: int32(ref.RefType),
+		})
+	}
+
 	dbSpan.Type = "span"
-	_, err := cs.bucket.Upsert(fmt.Sprintf("%d", uint64(span.SpanID)), dbSpan, 0)
+	_, err := cs.bucket.Upsert(fmt.Sprintf("%d", dbSpan.SpanID), dbSpan, 0)
 	if err != nil {
 		return err
 	}
@@ -517,20 +585,6 @@ func shouldIndexTag(tag TagInsertion) bool {
 		utf8.ValidString(tag.TagValue) &&
 		utf8.ValidString(tag.TagKey) &&
 		!isJSON(tag.TagValue)
-}
-
-type Tag struct {
-	TagInsertion
-	TraceID   [16]byte  `json:"trace_id"`
-	SpanID    uint64    `json:"span_id"`
-	StartTime time.Time `json:"start_time"`
-	Type      string    `json:"type"`
-}
-
-type TagInsertion struct {
-	ServiceName string `json:"service_name"`
-	TagKey      string `json:"tag_key"`
-	TagValue    string `json:"tag_value"`
 }
 
 func getAllUniqueTags(span *model.Span) []TagInsertion {
@@ -610,8 +664,8 @@ func validateQuery(p *spanstore.TraceQueryParameters) error {
 }
 
 // IntersectTraceIDs takes a list of UniqueTraceIDs and intersects them.
-func IntersectTraceIDs(uniqueTraceIdsList []dbmodel.UniqueTraceIDs) dbmodel.UniqueTraceIDs {
-	retMe := dbmodel.UniqueTraceIDs{}
+func IntersectTraceIDs(uniqueTraceIdsList []UniqueTraceIDs) UniqueTraceIDs {
+	retMe := UniqueTraceIDs{}
 	for key, value := range uniqueTraceIdsList[0] {
 		keyExistsInAll := true
 		for _, otherTraceIds := range uniqueTraceIdsList[1:] {
@@ -625,4 +679,9 @@ func IntersectTraceIDs(uniqueTraceIdsList []dbmodel.UniqueTraceIDs) dbmodel.Uniq
 		}
 	}
 	return retMe
+}
+
+// Add adds a traceID to the existing map
+func (u UniqueTraceIDs) Add(traceID [16]byte) {
+	u[traceID] = struct{}{}
 }
