@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -30,31 +29,31 @@ var (
 	querySpanByTraceID = `
 SELECT trace_id, span_id, operation_name, flags, start_time, duration, tags, logs, references, process
 FROM %s
-WHERE trace_id = ? AND type="span"`
-	queryServiceNames   = `SELECT DISTINCT process.service_name from %s where type="span"`
-	queryOperationNames = `SELECT DISTINCT operation_name from %s where process.service_name = ? AND type="span"`
+WHERE trace_id.hi = ? AND trace_id.lo = ? AND ` + "`type`" + `="span"`
+	queryServiceNames   = `SELECT DISTINCT process.service_name from %s where ` + "`type`" + `="span"`
+	queryOperationNames = `SELECT DISTINCT operation_name from %s where process.service_name = ? AND ` + "`type`" + `="span"`
 	queryByTag          = `
 		SELECT DISTINCT trace_id
 		FROM %s
-		WHERE service_name = ? AND tag_key = ? AND tag_value = ? and start_time > ? and start_time < ? AND type="tag"
+		WHERE service_name = ? AND tag_key = ? AND tag_value = ? and start_time > ? and start_time < ? AND ` + "`type`" + `="tag"
 		ORDER BY start_time DESC
 		LIMIT ?`
 	queryByServiceName = `
 		SELECT DISTINCT trace_id
 		FROM %s
-		WHERE process.service_name = ? AND start_time > ? AND start_time < ? AND type="span"
+		WHERE process.service_name = ? AND start_time > ? AND start_time < ? AND ` + "`type`" + `="span"
 		ORDER BY start_time DESC
 		LIMIT ?`
 	queryByServiceAndOperationName = `
 		SELECT DISTINCT trace_id
 		FROM %s
-		WHERE process.service_name = ? AND operation_name = ? AND start_time > ? AND start_time < ? AND type="span"
+		WHERE process.service_name = ? AND operation_name = ? AND start_time > ? AND start_time < ? AND` + "`type`" + `="span"
 		ORDER BY start_time DESC
 		LIMIT ?`
 	queryByDuration = `
 		SELECT DISTINCT trace_id
 		FROM %s
-		WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND type="span"
+		WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND ` + "`type`" + `="span"
 		LIMIT ?`
 	depsSelectStmt = "SELECT ts, dependencies FROM %s WHERE ts >= ? AND ts < ?"
 )
@@ -62,26 +61,32 @@ WHERE trace_id = ? AND type="span"`
 const (
 	maximumTagKeyOrValueSize = 256
 	defaultNumTraces         = 100
+	dateLayout               = "2006-01-02T15:04:05.000Z"
 )
 
+type TraceID struct {
+	High uint64 `json:"hi"`
+	Low  uint64 `json:"lo"`
+}
+
 type SpanRef struct {
-	TraceID [16]byte `json:"trace_id"`
-	SpanID  uint64   `json:"span_id"`
-	RefType int32    `json:"ref_type"`
+	TraceID TraceID `json:"trace_id"`
+	SpanID  uint64  `json:"span_id"`
+	RefType int32   `json:"ref_type"`
 }
 
 type Span struct {
 	OperationName string           `json:"operation_name,omitempty"`
 	References    []SpanRef        `json:"references"`
 	Flags         model.Flags      `json:"flags"`
-	StartTime     time.Time        `json:"start_time"`
+	StartTime     string           `json:"start_time"` // this is necessary until an analytics issue is closed out.
 	Duration      time.Duration    `json:"duration"`
 	Tags          []model.KeyValue `json:"tags"`
 	Logs          []model.Log      `json:"logs"`
 	Process       *model.Process   `json:"process,omitempty"`
 	ProcessID     string           `json:"process_id,omitempty"`
 	Warnings      []string         `json:"warnings,omitempty"`
-	TraceID       [16]byte         `json:"trace_id"`
+	TraceID       TraceID          `json:"trace_id"`
 	SpanID        uint64           `json:"span_id"`
 	Type          string           `json:"type"`
 }
@@ -97,7 +102,7 @@ type dependency struct {
 
 type Tag struct {
 	TagInsertion
-	TraceID   [16]byte  `json:"trace_id"`
+	TraceID   TraceID   `json:"trace_id"`
 	SpanID    uint64    `json:"span_id"`
 	StartTime time.Time `json:"start_time"`
 	Type      string    `json:"type"`
@@ -108,8 +113,6 @@ type TagInsertion struct {
 	TagKey      string `json:"tag_key"`
 	TagValue    string `json:"tag_value"`
 }
-
-type TraceID [16]byte
 
 type UniqueTraceIDs map[TraceID]struct{}
 
@@ -206,8 +209,11 @@ func main() {
 }
 
 func (cs *couchbaseStore) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
-	query := gocb.NewN1qlQuery(depsSelectStmt).AdHoc(false)
-	result, err := cs.bucket.ExecuteN1qlQuery(query, []interface{}{endTs.Add(-1 * lookback), endTs})
+	query := gocb.NewAnalyticsQuery(depsSelectStmt) // .AdHoc(false)
+	result, err := cs.bucket.ExecuteAnalyticsQuery(
+		query,
+		[]interface{}{endTs.Add(-1 * lookback).Format(dateLayout), endTs.Format(dateLayout)},
+	)
 	if err != nil {
 		return nil, errors.Wrap(err, "Error reading dependencies from storage")
 	}
@@ -232,8 +238,9 @@ func (cs *couchbaseStore) GetTrace(ctx context.Context, traceID model.TraceID) (
 	defer span.Finish()
 	span.LogFields(otlog.String("event", "searching"), otlog.Object("trace_id", traceID))
 
-	query := gocb.NewN1qlQuery(querySpanByTraceID)
-	result, err := cs.bucket.ExecuteN1qlQuery(query, []interface{}{traceIDFromDomain(traceID)})
+	query := gocb.NewAnalyticsQuery(querySpanByTraceID)
+	dbTraceID := traceIDFromDomain(traceID)
+	result, err := cs.bucket.ExecuteAnalyticsQuery(query, []interface{}{dbTraceID.High, dbTraceID.Low})
 	if err != nil {
 		logErrorToSpan(span, err)
 		return nil, err
@@ -242,18 +249,25 @@ func (cs *couchbaseStore) GetTrace(ctx context.Context, traceID model.TraceID) (
 	var trace model.Trace
 	var traceSpan Span
 	for result.Next(&traceSpan) {
+		startTime, err := time.Parse(dateLayout, traceSpan.StartTime)
+		if err != nil {
+			return nil, err
+		}
 		modelSpan := model.Span{
 			TraceID:       traceIDToDomain(traceSpan.TraceID),
 			SpanID:        model.SpanID(traceSpan.SpanID),
 			Duration:      traceSpan.Duration,
-			StartTime:     traceSpan.StartTime,
+			StartTime:     startTime,
 			OperationName: traceSpan.OperationName,
 			ProcessID:     traceSpan.ProcessID,
 			Flags:         traceSpan.Flags,
 			Logs:          traceSpan.Logs,
-			Process:       traceSpan.Process,
 			Warnings:      traceSpan.Warnings,
 			Tags:          traceSpan.Tags,
+		}
+		modelSpan.Process = &model.Process{
+			ServiceName: traceSpan.Process.ServiceName,
+			Tags:        traceSpan.Process.Tags,
 		}
 		for _, ref := range traceSpan.References {
 			modelSpan.References = append(modelSpan.References, model.SpanRef{
@@ -278,8 +292,8 @@ func (cs *couchbaseStore) GetTrace(ctx context.Context, traceID model.TraceID) (
 }
 
 func (cs *couchbaseStore) GetServices(ctx context.Context) ([]string, error) {
-	query := gocb.NewN1qlQuery(queryServiceNames)
-	result, err := cs.bucket.ExecuteN1qlQuery(query, nil)
+	query := gocb.NewAnalyticsQuery(queryServiceNames)
+	result, err := cs.bucket.ExecuteAnalyticsQuery(query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -303,8 +317,8 @@ func (cs *couchbaseStore) GetServices(ctx context.Context) ([]string, error) {
 }
 
 func (cs *couchbaseStore) GetOperations(ctx context.Context, service string) ([]string, error) {
-	query := gocb.NewN1qlQuery(queryOperationNames)
-	result, err := cs.bucket.ExecuteN1qlQuery(query, []interface{}{service})
+	query := gocb.NewAnalyticsQuery(queryOperationNames)
+	result, err := cs.bucket.ExecuteAnalyticsQuery(query, []interface{}{service})
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +420,7 @@ func (cs *couchbaseStore) queryByTagsAndLogs(ctx context.Context, tq *spanstore.
 	for k, v := range tq.Tags {
 		childSpan, _ := opentracing.StartSpanFromContext(ctx, "queryByTag")
 		childSpan.LogFields(otlog.String("tag.key", k), otlog.String("tag.value", v))
-		query := gocb.NewN1qlQuery(queryByTag)
+		query := gocb.NewAnalyticsQuery(queryByTag)
 		params := []interface{}{
 			tq.ServiceName,
 			k,
@@ -436,7 +450,7 @@ func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spans
 		maxDuration = traceQuery.DurationMax.Nanoseconds()
 	}
 
-	query := gocb.NewN1qlQuery(queryByDuration)
+	query := gocb.NewAnalyticsQuery(queryByDuration)
 	params := []interface{}{
 		traceQuery.ServiceName,
 		traceQuery.OperationName,
@@ -451,7 +465,7 @@ func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spans
 func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := startSpanForQuery(ctx, "queryByServiceNameAndOperation", queryByServiceAndOperationName)
 	defer span.Finish()
-	query := gocb.NewN1qlQuery(queryByServiceAndOperationName)
+	query := gocb.NewAnalyticsQuery(queryByServiceAndOperationName)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.OperationName,
@@ -465,7 +479,7 @@ func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq
 func (cs *couchbaseStore) queryByService(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := startSpanForQuery(ctx, "queryByService", queryByServiceName)
 	defer span.Finish()
-	query := gocb.NewN1qlQuery(queryByServiceName)
+	query := gocb.NewAnalyticsQuery(queryByServiceName)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.StartTimeMin,
@@ -475,13 +489,13 @@ func (cs *couchbaseStore) queryByService(ctx context.Context, tq *spanstore.Trac
 	return cs.executeQuery(span, query, params)
 }
 
-func (cs *couchbaseStore) executeQuery(span opentracing.Span, query *gocb.N1qlQuery, params []interface{}) (UniqueTraceIDs, error) {
+func (cs *couchbaseStore) executeQuery(span opentracing.Span, query *gocb.AnalyticsQuery, params []interface{}) (UniqueTraceIDs, error) {
 	// start := time.Now()
 	var traceID struct {
-		TraceID [16]byte `json:"trace_id"`
+		TraceID TraceID `json:"trace_id"`
 	}
 	traceIDs := make(UniqueTraceIDs)
-	result, err := cs.bucket.ExecuteN1qlQuery(query, params)
+	result, err := cs.bucket.ExecuteAnalyticsQuery(query, params)
 	if err != nil {
 		logErrorToSpan(span, err)
 		return nil, err
@@ -511,7 +525,7 @@ func (cs *couchbaseStore) WriteSpan(span *model.Span) error {
 		TraceID:       traceIDFromDomain(span.TraceID),
 		SpanID:        uint64(span.SpanID),
 		Duration:      span.Duration,
-		StartTime:     span.StartTime,
+		StartTime:     span.StartTime.Format(dateLayout),
 		OperationName: span.OperationName,
 		ProcessID:     span.ProcessID,
 		Flags:         span.Flags,
@@ -615,7 +629,7 @@ func startSpanForQuery(ctx context.Context, name, query string) (opentracing.Spa
 	span, ctx := opentracing.StartSpanFromContext(ctx, name)
 	ottag.DBStatement.Set(span, query)
 	ottag.DBType.Set(span, "couchbase")
-	ottag.Component.Set(span, "n1ql")
+	ottag.Component.Set(span, "analytics")
 	return span, ctx
 }
 
@@ -627,17 +641,17 @@ func logErrorToSpan(span opentracing.Span, err error) {
 	span.LogFields(otlog.Error(err))
 }
 
-func traceIDToDomain(traceID [16]byte) model.TraceID {
+func traceIDToDomain(traceID TraceID) model.TraceID {
 	var modelTraceID model.TraceID
-	modelTraceID.High = binary.BigEndian.Uint64(traceID[:8])
-	modelTraceID.Low = binary.BigEndian.Uint64(traceID[8:])
+	modelTraceID.High = traceID.High
+	modelTraceID.Low = traceID.Low
 	return modelTraceID
 }
 
-func traceIDFromDomain(traceID model.TraceID) [16]byte {
-	var dbTraceID [16]byte
-	binary.BigEndian.PutUint64(dbTraceID[:8], uint64(traceID.High))
-	binary.BigEndian.PutUint64(dbTraceID[8:], uint64(traceID.Low))
+func traceIDFromDomain(traceID model.TraceID) TraceID {
+	var dbTraceID TraceID
+	dbTraceID.High = traceID.High
+	dbTraceID.Low = traceID.Low
 	return dbTraceID
 }
 
@@ -682,6 +696,6 @@ func IntersectTraceIDs(uniqueTraceIdsList []UniqueTraceIDs) UniqueTraceIDs {
 }
 
 // Add adds a traceID to the existing map
-func (u UniqueTraceIDs) Add(traceID [16]byte) {
+func (u UniqueTraceIDs) Add(traceID TraceID) {
 	u[traceID] = struct{}{}
 }
