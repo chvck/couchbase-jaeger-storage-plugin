@@ -32,29 +32,29 @@ FROM %s
 WHERE trace_id.hi = ? AND trace_id.lo = ? AND ` + "`type`" + `="span"`
 	queryServiceNames   = `SELECT DISTINCT process.service_name from %s where ` + "`type`" + `="span"`
 	queryOperationNames = `SELECT DISTINCT operation_name from %s where process.service_name = ? AND ` + "`type`" + `="span"`
-	queryByTag          = `
-		SELECT DISTINCT trace_id
-		FROM %s
-		WHERE service_name = ? AND tag_key = ? AND tag_value = ? and start_time > ? and start_time < ? AND ` + "`type`" + `="tag"
-		ORDER BY start_time DESC
-		LIMIT ?`
-	queryByServiceName = `
-		SELECT DISTINCT trace_id
-		FROM %s
-		WHERE process.service_name = ? AND start_time > ? AND start_time < ? AND ` + "`type`" + `="span"
-		ORDER BY start_time DESC
-		LIMIT ?`
-	queryByServiceAndOperationName = `
-		SELECT DISTINCT trace_id
-		FROM %s
-		WHERE process.service_name = ? AND operation_name = ? AND start_time > ? AND start_time < ? AND` + "`type`" + `="span"
-		ORDER BY start_time DESC
-		LIMIT ?`
-	queryByDuration = `
-		SELECT DISTINCT trace_id
-		FROM %s
-		WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND ` + "`type`" + `="span"
-		LIMIT ?`
+	queryIDsByTag       = `
+SELECT DISTINCT b.trace_id
+FROM %s AS b
+WHERE b.process.service_name = ? AND b.start_time > ? AND b.start_time < ? AND ` + "b.`type`" + `="span" AND (EVERY tag IN ? SATISFIES tag IN b.processed_tags END)
+ORDER BY b.start_time DESC
+LIMIT ?`
+	queryIDsByServiceName = `
+SELECT DISTINCT trace_id
+FROM %s
+WHERE process.service_name = ? AND start_time > ? AND start_time < ? AND ` + "`type`" + `="span"
+ORDER BY start_time DESC
+LIMIT ?`
+	queryIDsByServiceAndOperationName = `
+SELECT DISTINCT trace_id
+FROM %s AS b
+WHERE process.service_name = ? AND operation_name = ? AND start_time > ? AND start_time < ? AND` + "`type`" + `="span"
+ORDER BY start_time DESC
+LIMIT ?`
+	queryIDsByDuration = `
+SELECT DISTINCT trace_id
+FROM %s AS b
+WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND ` + "`type`" + `="span"
+LIMIT ?`
 	depsSelectStmt = "SELECT ts, dependencies FROM %s WHERE ts >= ? AND ts < ?"
 )
 
@@ -89,6 +89,7 @@ type Span struct {
 	TraceID       TraceID          `json:"trace_id"`
 	SpanID        uint64           `json:"span_id"`
 	Type          string           `json:"type"`
+	ProcessedTags []string         `json:"processed_tags"`
 }
 
 type couchbaseStore struct {
@@ -101,17 +102,12 @@ type dependency struct {
 }
 
 type Tag struct {
-	TagInsertion
-	TraceID   TraceID   `json:"trace_id"`
-	SpanID    uint64    `json:"span_id"`
-	StartTime time.Time `json:"start_time"`
-	Type      string    `json:"type"`
+	Tag string `json:"tag"`
 }
 
 type TagInsertion struct {
-	ServiceName string `json:"service_name"`
-	TagKey      string `json:"tag_key"`
-	TagValue    string `json:"tag_value"`
+	TagKey   string `json:"tag_key"`
+	TagValue string `json:"tag_value"`
 }
 
 type UniqueTraceIDs map[TraceID]struct{}
@@ -186,10 +182,10 @@ func main() {
 	querySpanByTraceID = fmt.Sprintf(querySpanByTraceID, options.BucketName)
 	queryServiceNames = fmt.Sprintf(queryServiceNames, options.BucketName)
 	queryOperationNames = fmt.Sprintf(queryOperationNames, options.BucketName)
-	queryByTag = fmt.Sprintf(queryByTag, options.BucketName)
-	queryByServiceName = fmt.Sprintf(queryByServiceName, options.BucketName)
-	queryByServiceAndOperationName = fmt.Sprintf(queryByServiceAndOperationName, options.BucketName)
-	queryByDuration = fmt.Sprintf(queryByDuration, options.BucketName)
+	queryIDsByTag = fmt.Sprintf(queryIDsByTag, options.BucketName)
+	queryIDsByServiceName = fmt.Sprintf(queryIDsByServiceName, options.BucketName)
+	queryIDsByServiceAndOperationName = fmt.Sprintf(queryIDsByServiceAndOperationName, options.BucketName)
+	queryIDsByDuration = fmt.Sprintf(queryIDsByDuration, options.BucketName)
 	depsSelectStmt = fmt.Sprintf(depsSelectStmt, options.BucketName)
 
 	plugin.Serve(&plugin.ServeConfig{
@@ -413,35 +409,28 @@ func (cs *couchbaseStore) findTraceIDs(ctx context.Context, traceQuery *spanstor
 }
 
 func (cs *couchbaseStore) queryByTagsAndLogs(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
-	span, ctx := startSpanForQuery(ctx, "queryByTagsAndLogs", queryByTag)
+	span, ctx := startSpanForQuery(ctx, "queryByTagsAndLogs", queryIDsByTag)
 	defer span.Finish()
 
-	results := make([]UniqueTraceIDs, 0, len(tq.Tags))
+	var where []string
 	for k, v := range tq.Tags {
-		childSpan, _ := opentracing.StartSpanFromContext(ctx, "queryByTag")
-		childSpan.LogFields(otlog.String("tag.key", k), otlog.String("tag.value", v))
-		query := gocb.NewAnalyticsQuery(queryByTag)
-		params := []interface{}{
-			tq.ServiceName,
-			k,
-			v,
-			tq.StartTimeMin,
-			tq.StartTimeMax,
-			tq.NumTraces,
-		}
-
-		t, err := cs.executeQuery(childSpan, query, params)
-		childSpan.Finish()
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, t)
+		where = append(where, fmt.Sprintf("%s_%s", k, v))
 	}
-	return IntersectTraceIDs(results), nil
+
+	query := gocb.NewAnalyticsQuery(queryIDsByTag)
+	params := []interface{}{
+		tq.ServiceName,
+		tq.StartTimeMin,
+		tq.StartTimeMax,
+		where,
+		tq.NumTraces,
+	}
+
+	return cs.executeQuery(span, query, params)
 }
 
 func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
-	span, ctx := startSpanForQuery(ctx, "queryByDuration", queryByDuration)
+	span, ctx := startSpanForQuery(ctx, "queryByDuration", queryIDsByDuration)
 	defer span.Finish()
 
 	minDuration := traceQuery.DurationMin.Nanoseconds()
@@ -450,7 +439,7 @@ func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spans
 		maxDuration = traceQuery.DurationMax.Nanoseconds()
 	}
 
-	query := gocb.NewAnalyticsQuery(queryByDuration)
+	query := gocb.NewAnalyticsQuery(queryIDsByDuration)
 	params := []interface{}{
 		traceQuery.ServiceName,
 		traceQuery.OperationName,
@@ -463,9 +452,9 @@ func (cs *couchbaseStore) queryByDuration(ctx context.Context, traceQuery *spans
 }
 
 func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
-	span, ctx := startSpanForQuery(ctx, "queryByServiceNameAndOperation", queryByServiceAndOperationName)
+	span, ctx := startSpanForQuery(ctx, "queryByServiceNameAndOperation", queryIDsByServiceAndOperationName)
 	defer span.Finish()
-	query := gocb.NewAnalyticsQuery(queryByServiceAndOperationName)
+	query := gocb.NewAnalyticsQuery(queryIDsByServiceAndOperationName)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.OperationName,
@@ -477,9 +466,9 @@ func (cs *couchbaseStore) queryByServiceNameAndOperation(ctx context.Context, tq
 }
 
 func (cs *couchbaseStore) queryByService(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
-	span, ctx := startSpanForQuery(ctx, "queryByService", queryByServiceName)
+	span, ctx := startSpanForQuery(ctx, "queryByService", queryIDsByServiceName)
 	defer span.Finish()
-	query := gocb.NewAnalyticsQuery(queryByServiceName)
+	query := gocb.NewAnalyticsQuery(queryIDsByServiceName)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.StartTimeMin,
@@ -541,6 +530,7 @@ func (cs *couchbaseStore) WriteSpan(span *model.Span) error {
 			RefType: int32(ref.RefType),
 		})
 	}
+	dbSpan.ProcessedTags = cs.getTags(span)
 
 	dbSpan.Type = "span"
 	_, err := cs.bucket.Upsert(fmt.Sprintf("%d", dbSpan.SpanID), dbSpan, 0)
@@ -548,43 +538,57 @@ func (cs *couchbaseStore) WriteSpan(span *model.Span) error {
 		return err
 	}
 
-	return cs.writeTags(span)
+	return nil
 }
 
-func (cs *couchbaseStore) writeTags(span *model.Span) error {
+func (cs *couchbaseStore) getTags(span *model.Span) []string {
+	var tags []string
 	for _, tag := range getAllUniqueTags(span) {
 		if shouldIndexTag(tag) {
-			dbTag := Tag{
-				TraceID:   traceIDFromDomain(span.TraceID),
-				SpanID:    uint64(span.SpanID),
-				StartTime: span.StartTime,
-				Type:      "tag",
-			}
-			dbTag.ServiceName = tag.ServiceName
-			dbTag.TagKey = tag.TagKey
-			dbTag.TagValue = tag.TagValue
-			_, err := cs.bucket.Upsert(
-				fmt.Sprintf("%d-%s-%s", dbTag.SpanID, dbTag.TagKey, dbTag.StartTime.String()),
-				dbTag,
-				0,
-			)
-			if err != nil {
-				return err
-			}
-			// if err := s.writerMetrics.tagIndex.Exec(insertTagQuery, s.logger); err != nil {
-			// 	withTagInfo := s.logger.
-			// 		With(zap.String("tag_key", v.TagKey)).
-			// 		With(zap.String("tag_value", v.TagValue)).
-			// 		With(zap.String("service_name", v.ServiceName))
-			// 	return s.logError(ds, err, "Failed to index tag", withTagInfo)
-			// }
+			tags = append(tags, tag.TagKey+"_"+tag.TagValue)
 		} else {
 			// s.tagIndexSkipped.Inc(1)
 		}
 	}
 
-	return nil
+	return tags
 }
+
+//
+// func (cs *couchbaseStore) writeTags(span *model.Span) error {
+// 	for _, tag := range getAllUniqueTags(span) {
+// 		if shouldIndexTag(tag) {
+// 			dbTag := Tag{
+// 				TraceID:   traceIDFromDomain(span.TraceID),
+// 				SpanID:    uint64(span.SpanID),
+// 				StartTime: span.StartTime,
+// 				Type:      "tag",
+// 			}
+// 			dbTag.ServiceName = tag.ServiceName
+// 			dbTag.TagKey = tag.TagKey
+// 			dbTag.TagValue = tag.TagValue
+// 			_, err := cs.bucket.Upsert(
+// 				fmt.Sprintf("%d-%s-%s", dbTag.SpanID, dbTag.TagKey, dbTag.StartTime.String()),
+// 				dbTag,
+// 				0,
+// 			)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			// if err := s.writerMetrics.tagIndex.Exec(insertTagQuery, s.logger); err != nil {
+// 			// 	withTagInfo := s.logger.
+// 			// 		With(zap.String("tag_key", v.TagKey)).
+// 			// 		With(zap.String("tag_value", v.TagValue)).
+// 			// 		With(zap.String("service_name", v.ServiceName))
+// 			// 	return s.logError(ds, err, "Failed to index tag", withTagInfo)
+// 			// }
+// 		} else {
+// 			// s.tagIndexSkipped.Inc(1)
+// 		}
+// 	}
+//
+// 	return nil
+// }
 
 // shouldIndexTag checks to see if the tag is json or not, if it's UTF8 valid and it's not too large
 func shouldIndexTag(tag TagInsertion) bool {
@@ -617,9 +621,9 @@ func getAllUniqueTags(span *model.Span) []TagInsertion {
 			continue // skip identical tags
 		}
 		uniqueTags = append(uniqueTags, TagInsertion{
-			ServiceName: span.Process.ServiceName,
-			TagKey:      allTags[i].Key,
-			TagValue:    allTags[i].AsString(),
+			// ServiceName: span.Process.ServiceName,
+			TagKey:   allTags[i].Key,
+			TagValue: allTags[i].AsString(),
 		})
 	}
 	return uniqueTags
