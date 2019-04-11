@@ -60,6 +60,11 @@ LIMIT ?`
 	queryIDsByDuration = `
 SELECT DISTINCT RAW trace_id
 FROM %s AS b
+WHERE process.service_name = ? AND duration > ? AND duration < ? AND ` + "`type`" + `="span"
+LIMIT ?`
+	queryIDsByDurationAndOperationName = `
+SELECT DISTINCT RAW trace_id
+FROM %s AS b
 WHERE process.service_name = ? AND operation_name = ? AND duration > ? AND duration < ? AND ` + "`type`" + `="span"
 LIMIT ?`
 
@@ -412,7 +417,12 @@ func (cs *couchbaseStore) queryTracesByTagsAndLogs(ctx context.Context, tq *span
 }
 
 func (cs *couchbaseStore) queryTracesByDuration(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByDuration)
+	var queryStmt string
+	if traceQuery.OperationName == "" {
+		queryStmt = fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByDuration)
+	} else {
+		queryStmt = fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByDurationAndOperationName)
+	}
 	span, ctx := startSpanForQuery(ctx, "queryIDsByDuration", queryStmt)
 	defer span.Finish()
 
@@ -423,12 +433,22 @@ func (cs *couchbaseStore) queryTracesByDuration(ctx context.Context, traceQuery 
 	}
 
 	query := gocb.NewAnalyticsQuery(queryStmt)
-	params := []interface{}{
-		traceQuery.ServiceName,
-		traceQuery.OperationName,
-		minDuration,
-		maxDuration,
-		traceQuery.NumTraces,
+	var params []interface{}
+	if traceQuery.OperationName == "" {
+		params = []interface{}{
+			traceQuery.ServiceName,
+			minDuration,
+			maxDuration,
+			traceQuery.NumTraces,
+		}
+	} else {
+		params = []interface{}{
+			traceQuery.ServiceName,
+			traceQuery.OperationName,
+			minDuration,
+			maxDuration,
+			traceQuery.NumTraces,
+		}
 	}
 
 	return cs.executeTraceQuery(span, query, params)
