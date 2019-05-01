@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 
+	"github.com/prometheus/common/log"
+
 	"gopkg.in/couchbase/gocb.v1"
 
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
@@ -50,7 +52,7 @@ func main() {
 	if configPath != "" {
 		err := v.ReadInConfig()
 		if err != nil {
-			fmt.Println(err)
+			log.Error(err)
 			panic(err)
 		}
 	}
@@ -61,7 +63,7 @@ func main() {
 	gocb.SetLogger(gocb.VerboseStdioLogger())
 	cluster, err := gocb.Connect(options.ConnStr)
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 		panic(err)
 	}
 
@@ -70,13 +72,13 @@ func main() {
 		Password: options.Password,
 	})
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 		panic(err)
 	}
 
 	bucket, err := cluster.OpenBucket(options.BucketName, "")
 	if err != nil {
-		fmt.Println(err)
+		log.Error(err)
 		panic(err)
 	}
 
