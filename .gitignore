@@ -1,3 +1,4 @@
 .DS_Store
 couchbase-jaeger-storage-plugin
 vendor/
+config.yaml
