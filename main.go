@@ -3,8 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
-
-	"github.com/prometheus/common/log"
+	"log"
+	"strings"
 
 	"gopkg.in/couchbase/gocb.v1"
 
@@ -42,6 +42,8 @@ func main() {
 	flag.Parse()
 
 	v := viper.New()
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
 	if configPath != "" {
 		v.SetConfigFile(configPath)
 	}
@@ -52,8 +54,7 @@ func main() {
 	if configPath != "" {
 		err := v.ReadInConfig()
 		if err != nil {
-			log.Error(err)
-			panic(err)
+			log.Fatal(err)
 		}
 	}
 
@@ -63,8 +64,7 @@ func main() {
 	gocb.SetLogger(gocb.VerboseStdioLogger())
 	cluster, err := gocb.Connect(options.ConnStr)
 	if err != nil {
-		log.Error(err)
-		panic(err)
+		log.Fatal(err)
 	}
 
 	err = cluster.Authenticate(gocb.PasswordAuthenticator{
@@ -72,14 +72,12 @@ func main() {
 		Password: options.Password,
 	})
 	if err != nil {
-		log.Error(err)
-		panic(err)
+		log.Fatal(err)
 	}
 
 	bucket, err := cluster.OpenBucket(options.BucketName, "")
 	if err != nil {
-		log.Error(err)
-		panic(err)
+		log.Fatal(err)
 	}
 
 	store := couchbaseStore{bucket: bucket}

@@ -12,10 +12,10 @@ const password = "couchbase.password"
 const connStr = "couchbase.connString"
 
 type Options struct {
-	ConnStr    string `yaml:"connString"`
-	Username   string `yaml:"username"`
-	Password   string `yaml:"password"`
-	BucketName string `yaml:"bucket"`
+	ConnStr    string
+	Username   string
+	Password   string
+	BucketName string
 }
 
 func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
