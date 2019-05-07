@@ -7,11 +7,10 @@ import (
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
-	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go"
 	ottag "github.com/opentracing/opentracing-go/ext"
 	otlog "github.com/opentracing/opentracing-go/log"
 	"github.com/pkg/errors"
-	"gopkg.in/couchbase/gocb.v1"
 )
 
 var (
@@ -87,7 +86,7 @@ const (
 )
 
 type couchbaseSpanReader struct {
-	bucket *gocb.Bucket
+	store Store
 }
 
 func (cs *couchbaseSpanReader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Trace, error) {
@@ -95,9 +94,8 @@ func (cs *couchbaseSpanReader) GetTrace(ctx context.Context, traceID model.Trace
 	defer span.Finish()
 	span.LogFields(otlog.String("event", "searching"), otlog.Object("trace_id", traceID))
 
-	query := gocb.NewAnalyticsQuery(querySpanByTraceID)
 	dbTraceID := traceIDFromDomain(traceID)
-	result, err := cs.bucket.ExecuteAnalyticsQuery(query, []interface{}{dbTraceID.High, dbTraceID.Low})
+	result, err := cs.store.Query(querySpanByTraceID, []interface{}{dbTraceID.High, dbTraceID.Low})
 	if err != nil {
 		cs.logErrorToSpan(span, err)
 		return nil, err
@@ -125,8 +123,7 @@ func (cs *couchbaseSpanReader) GetTrace(ctx context.Context, traceID model.Trace
 }
 
 func (cs *couchbaseSpanReader) GetServices(ctx context.Context) ([]string, error) {
-	query := gocb.NewAnalyticsQuery(queryServiceNames)
-	result, err := cs.bucket.ExecuteAnalyticsQuery(query, nil)
+	result, err := cs.store.Query(queryServiceNames, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +147,7 @@ func (cs *couchbaseSpanReader) GetServices(ctx context.Context) ([]string, error
 }
 
 func (cs *couchbaseSpanReader) GetOperations(ctx context.Context, service string) ([]string, error) {
-	query := gocb.NewAnalyticsQuery(queryOperationNames)
-	result, err := cs.bucket.ExecuteAnalyticsQuery(query, []interface{}{service})
+	result, err := cs.store.Query(queryOperationNames, []interface{}{service})
 	if err != nil {
 		return nil, err
 	}
@@ -229,10 +225,10 @@ func (cs *couchbaseSpanReader) findTraces(ctx context.Context, traceQuery *spans
 }
 
 func (cs *couchbaseSpanReader) queryTracesByService(ctx context.Context, tq *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByServiceName)
+	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.store.Name(), queryIDsByServiceName)
 	span, ctx := cs.startSpanForQuery(ctx, "queryTracesByService", queryStmt)
 	defer span.Finish()
-	query := gocb.NewAnalyticsQuery(queryStmt)
+
 	params := []interface{}{
 		tq.ServiceName,
 		tq.StartTimeMin,
@@ -240,11 +236,11 @@ func (cs *couchbaseSpanReader) queryTracesByService(ctx context.Context, tq *spa
 		tq.NumTraces,
 	}
 
-	return cs.executeTraceQuery(span, query, params)
+	return cs.executeTraceQuery(span, queryStmt, params)
 }
 
 func (cs *couchbaseSpanReader) queryTracesByServiceNameAndOperationAndTagsAndLogs(ctx context.Context, tq *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByServiceAndOperationNameAndTags)
+	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.store.Name(), queryIDsByServiceAndOperationNameAndTags)
 	span, ctx := cs.startSpanForQuery(ctx, "queryIDsByServiceAndOperationNameAndTags", queryStmt)
 	defer span.Finish()
 
@@ -253,7 +249,6 @@ func (cs *couchbaseSpanReader) queryTracesByServiceNameAndOperationAndTagsAndLog
 		where = append(where, fmt.Sprintf("%s_%s", k, v))
 	}
 
-	query := gocb.NewAnalyticsQuery(queryStmt)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.OperationName,
@@ -263,11 +258,11 @@ func (cs *couchbaseSpanReader) queryTracesByServiceNameAndOperationAndTagsAndLog
 		tq.NumTraces,
 	}
 
-	return cs.executeTraceQuery(span, query, params)
+	return cs.executeTraceQuery(span, queryStmt, params)
 }
 
 func (cs *couchbaseSpanReader) queryTracesByTagsAndLogs(ctx context.Context, tq *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByTag)
+	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.store.Name(), queryIDsByTag)
 	span, ctx := cs.startSpanForQuery(ctx, "queryIDsByTagsAndLogs", queryStmt)
 	defer span.Finish()
 
@@ -276,7 +271,6 @@ func (cs *couchbaseSpanReader) queryTracesByTagsAndLogs(ctx context.Context, tq 
 		where = append(where, fmt.Sprintf("%s_%s", k, v))
 	}
 
-	query := gocb.NewAnalyticsQuery(queryStmt)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.StartTimeMin,
@@ -285,15 +279,15 @@ func (cs *couchbaseSpanReader) queryTracesByTagsAndLogs(ctx context.Context, tq 
 		tq.NumTraces,
 	}
 
-	return cs.executeTraceQuery(span, query, params)
+	return cs.executeTraceQuery(span, queryStmt, params)
 }
 
 func (cs *couchbaseSpanReader) queryTracesByDuration(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
 	var queryStmt string
 	if traceQuery.OperationName == "" {
-		queryStmt = fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByDuration)
+		queryStmt = fmt.Sprintf(queryTracesBySubQuery, cs.store.Name(), queryIDsByDuration)
 	} else {
-		queryStmt = fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByDurationAndOperationName)
+		queryStmt = fmt.Sprintf(queryTracesBySubQuery, cs.store.Name(), queryIDsByDurationAndOperationName)
 	}
 	span, ctx := cs.startSpanForQuery(ctx, "queryIDsByDuration", queryStmt)
 	defer span.Finish()
@@ -304,7 +298,6 @@ func (cs *couchbaseSpanReader) queryTracesByDuration(ctx context.Context, traceQ
 		maxDuration = traceQuery.DurationMax.Nanoseconds()
 	}
 
-	query := gocb.NewAnalyticsQuery(queryStmt)
 	var params []interface{}
 	if traceQuery.OperationName == "" {
 		params = []interface{}{
@@ -323,15 +316,14 @@ func (cs *couchbaseSpanReader) queryTracesByDuration(ctx context.Context, traceQ
 		}
 	}
 
-	return cs.executeTraceQuery(span, query, params)
+	return cs.executeTraceQuery(span, queryStmt, params)
 }
 
 func (cs *couchbaseSpanReader) queryTracesByServiceNameAndOperation(ctx context.Context, tq *spanstore.TraceQueryParameters) ([]*model.Trace, error) {
-	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.bucket.Name(), queryIDsByServiceAndOperationName)
+	queryStmt := fmt.Sprintf(queryTracesBySubQuery, cs.store.Name(), queryIDsByServiceAndOperationName)
 	span, ctx := cs.startSpanForQuery(ctx, "queryIDsByServiceAndOperationName", queryStmt)
 	defer span.Finish()
 
-	query := gocb.NewAnalyticsQuery(queryStmt)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.OperationName,
@@ -339,11 +331,11 @@ func (cs *couchbaseSpanReader) queryTracesByServiceNameAndOperation(ctx context.
 		tq.StartTimeMax,
 		tq.NumTraces,
 	}
-	return cs.executeTraceQuery(span, query, params)
+	return cs.executeTraceQuery(span, queryStmt, params)
 }
 
-func (cs *couchbaseSpanReader) executeTraceQuery(span opentracing.Span, query *gocb.AnalyticsQuery, params []interface{}) ([]*model.Trace, error) {
-	result, err := cs.bucket.ExecuteAnalyticsQuery(query, params)
+func (cs *couchbaseSpanReader) executeTraceQuery(span opentracing.Span, query string, params []interface{}) ([]*model.Trace, error) {
+	result, err := cs.store.Query(query, params)
 	if err != nil {
 		cs.logErrorToSpan(span, err)
 		return nil, err
@@ -404,7 +396,6 @@ func (cs *couchbaseSpanReader) queryIDsByServiceNameAndOperationAndTagsAndLogs(c
 		where = append(where, fmt.Sprintf("%s_%s", k, v))
 	}
 
-	query := gocb.NewAnalyticsQuery(queryIDsByServiceAndOperationNameAndTags)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.OperationName,
@@ -414,7 +405,7 @@ func (cs *couchbaseSpanReader) queryIDsByServiceNameAndOperationAndTagsAndLogs(c
 		tq.NumTraces,
 	}
 
-	return cs.executeIDQuery(span, query, params)
+	return cs.executeIDQuery(span, queryIDsByServiceAndOperationNameAndTags, params)
 }
 
 func (cs *couchbaseSpanReader) queryIDsByTagsAndLogs(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
@@ -426,7 +417,6 @@ func (cs *couchbaseSpanReader) queryIDsByTagsAndLogs(ctx context.Context, tq *sp
 		where = append(where, fmt.Sprintf("%s_%s", k, v))
 	}
 
-	query := gocb.NewAnalyticsQuery(queryIDsByTag)
 	params := []interface{}{
 		tq.ServiceName,
 		tq.StartTimeMin,
@@ -435,7 +425,7 @@ func (cs *couchbaseSpanReader) queryIDsByTagsAndLogs(ctx context.Context, tq *sp
 		tq.NumTraces,
 	}
 
-	return cs.executeIDQuery(span, query, params)
+	return cs.executeIDQuery(span, queryIDsByTag, params)
 }
 
 func (cs *couchbaseSpanReader) queryIDsByDuration(ctx context.Context, traceQuery *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
@@ -448,7 +438,6 @@ func (cs *couchbaseSpanReader) queryIDsByDuration(ctx context.Context, traceQuer
 		maxDuration = traceQuery.DurationMax.Nanoseconds()
 	}
 
-	query := gocb.NewAnalyticsQuery(queryIDsByDuration)
 	params := []interface{}{
 		traceQuery.ServiceName,
 		traceQuery.OperationName,
@@ -457,13 +446,13 @@ func (cs *couchbaseSpanReader) queryIDsByDuration(ctx context.Context, traceQuer
 		traceQuery.NumTraces,
 	}
 
-	return cs.executeIDQuery(span, query, params)
+	return cs.executeIDQuery(span, queryIDsByDuration, params)
 }
 
 func (cs *couchbaseSpanReader) queryIDsByServiceNameAndOperation(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := cs.startSpanForQuery(ctx, "queryIDsByServiceNameAndOperation", queryIDsByServiceAndOperationName)
 	defer span.Finish()
-	query := gocb.NewAnalyticsQuery(queryIDsByServiceAndOperationName)
+
 	params := []interface{}{
 		tq.ServiceName,
 		tq.OperationName,
@@ -471,27 +460,28 @@ func (cs *couchbaseSpanReader) queryIDsByServiceNameAndOperation(ctx context.Con
 		tq.StartTimeMax,
 		tq.NumTraces,
 	}
-	return cs.executeIDQuery(span, query, params)
+	return cs.executeIDQuery(span, queryIDsByServiceAndOperationName, params)
 }
 
 func (cs *couchbaseSpanReader) queryIDsByService(ctx context.Context, tq *spanstore.TraceQueryParameters) (UniqueTraceIDs, error) {
 	span, ctx := cs.startSpanForQuery(ctx, "queryIDsByService", queryIDsByServiceName)
 	defer span.Finish()
-	query := gocb.NewAnalyticsQuery(queryIDsByServiceName)
+
 	params := []interface{}{
 		tq.ServiceName,
 		tq.StartTimeMin,
 		tq.StartTimeMax,
 		tq.NumTraces,
 	}
-	return cs.executeIDQuery(span, query, params)
+	return cs.executeIDQuery(span, queryIDsByServiceName, params)
 }
 
-func (cs *couchbaseSpanReader) executeIDQuery(span opentracing.Span, query *gocb.AnalyticsQuery, params []interface{}) (UniqueTraceIDs, error) {
+func (cs *couchbaseSpanReader) executeIDQuery(span opentracing.Span, query string, params []interface{}) (UniqueTraceIDs, error) {
 	// start := time.Now()
 	var traceID TraceID
 	traceIDs := make(UniqueTraceIDs)
-	result, err := cs.bucket.ExecuteAnalyticsQuery(query, params)
+
+	result, err := cs.store.Query(query, params)
 	if err != nil {
 		cs.logErrorToSpan(span, err)
 		return nil, err

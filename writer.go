@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/jaegertracing/jaeger/model"
-	"gopkg.in/couchbase/gocb.v1"
 )
 
 const (
@@ -16,7 +15,7 @@ const (
 )
 
 type couchbaseSpanWriter struct {
-	bucket *gocb.Bucket
+	store Store
 }
 
 func (cs *couchbaseSpanWriter) WriteSpan(span *model.Span) error {
@@ -43,7 +42,7 @@ func (cs *couchbaseSpanWriter) WriteSpan(span *model.Span) error {
 	dbSpan.ProcessedTags = cs.getTags(span)
 
 	dbSpan.Type = "span"
-	_, err := cs.bucket.Upsert(fmt.Sprintf("%d", dbSpan.SpanID), dbSpan, 0)
+	err := cs.store.Insert(fmt.Sprintf("%d", dbSpan.SpanID), dbSpan, 0)
 	if err != nil {
 		return err
 	}

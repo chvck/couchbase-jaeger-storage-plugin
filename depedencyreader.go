@@ -5,7 +5,6 @@ import (
 
 	"github.com/jaegertracing/jaeger/model"
 	"github.com/pkg/errors"
-	"gopkg.in/couchbase/gocb.v1"
 )
 
 var (
@@ -18,13 +17,12 @@ type Dependency struct {
 }
 
 type couchbaseDependencyReader struct {
-	bucket *gocb.Bucket
+	store Store
 }
 
 func (cs *couchbaseDependencyReader) GetDependencies(endTs time.Time, lookback time.Duration) ([]model.DependencyLink, error) {
-	query := gocb.NewAnalyticsQuery(depsSelectStmt) // .AdHoc(false)
-	result, err := cs.bucket.ExecuteAnalyticsQuery(
-		query,
+	result, err := cs.store.Query(
+		depsSelectStmt,
 		[]interface{}{endTs.Add(-1 * lookback).Format(dateLayout), endTs.Format(dateLayout)},
 	)
 	if err != nil {

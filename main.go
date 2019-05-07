@@ -14,25 +14,57 @@ import (
 	"github.com/spf13/viper"
 )
 
+type Store interface {
+	Query(query string, params interface{}) (Result, error)
+	Insert(key string, value interface{}, expiry int) error
+	Name() string
+}
+
+type Result interface {
+	Next(valuePtr interface{}) bool
+	Close() error
+}
+
 type couchbaseStore struct {
-	bucket *gocb.Bucket
+	bucket  *gocb.Bucket
+	cluster *gocb.Cluster
+}
+
+func (cs *couchbaseStore) Query(queryString string, params interface{}) (Result, error) {
+	query := gocb.NewAnalyticsQuery(queryString)
+	result, err := cs.bucket.ExecuteAnalyticsQuery(query, params)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (cs *couchbaseStore) Insert(key string, value interface{}, expiry int) error {
+	_, err := cs.bucket.Insert(key, value, 0)
+
+	return err
+}
+
+func (cs *couchbaseStore) Name() string {
+	return cs.bucket.Name()
 }
 
 func (cs *couchbaseStore) SpanReader() spanstore.Reader {
 	return &couchbaseSpanReader{
-		bucket: cs.bucket,
+		store: cs,
 	}
 }
 
 func (cs *couchbaseStore) SpanWriter() spanstore.Writer {
 	return &couchbaseSpanWriter{
-		bucket: cs.bucket,
+		store: cs,
 	}
 }
 
 func (cs *couchbaseStore) DependencyReader() dependencystore.Reader {
 	return &couchbaseDependencyReader{
-		bucket: cs.bucket,
+		store: cs,
 	}
 }
 
