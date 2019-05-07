@@ -10,12 +10,14 @@ const bucketName = "couchbase.bucket"
 const username = "couchbase.username"
 const password = "couchbase.password"
 const connStr = "couchbase.connString"
+const useCertAuth = "couchbase.useCertAuth"
 
 type Options struct {
-	ConnStr    string
-	Username   string
-	Password   string
-	BucketName string
+	ConnStr     string
+	Username    string
+	Password    string
+	BucketName  string
+	UseCertAuth bool
 }
 
 func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
@@ -26,4 +28,5 @@ func (opt *Options) InitFromViper(v *viper.Viper) {
 	opt.Username = v.GetString(username)
 	opt.Password = v.GetString(password)
 	opt.BucketName = v.GetString(bucketName)
+	opt.UseCertAuth = v.GetBool(useCertAuth)
 }
