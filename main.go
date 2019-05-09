@@ -38,7 +38,6 @@ func main() {
 	var options Options
 	options.InitFromViper(v)
 
-	gocb.SetLogger(gocb.VerboseStdioLogger())
 	cluster, err := gocb.Connect(options.ConnStr)
 	if err != nil {
 		log.Fatal(err)
