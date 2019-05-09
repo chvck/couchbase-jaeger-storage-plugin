@@ -3,3 +3,6 @@ couchbase:
   username: Administrator
   password: password
   connString: couchbase://localhost
+  useCertAuth: false
+  useAnalytics: true
+  n1qlFallback: true
