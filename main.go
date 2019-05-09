@@ -108,17 +108,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var auth gocb.Authenticator
-	if options.UseCertAuth {
-		auth = gocb.CertAuthenticator{}
-	} else {
-		auth = gocb.PasswordAuthenticator{
-			Username: options.Username,
-			Password: options.Password,
-		}
-	}
-
-	err = cluster.Authenticate(auth)
+	err = cluster.Authenticate(gocb.PasswordAuthenticator{
+		Username: options.Username,
+		Password: options.Password,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
