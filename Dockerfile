@@ -5,6 +5,8 @@ ENV COUCHBASE_USERNAME=""
 ENV COUCHBASE_PASSWORD=""
 ENV COUCHBASE_BUCKET="default"
 ENV COUCHBASE_CONNSTRING="couchbase://host.docker.internal"
+ENV COUCHBASE_USEANALYTICS=true
+ENV COUCHBASE_N1QLFALLBACK=true
 ENV GRPC_STORAGE_PLUGIN_BINARY="/go/bin/couchbase-jaeger-storage-plugin-linux"
 
 # This is such a hack, necessary because the base scratch dockerfile is very minimal.
