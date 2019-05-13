@@ -12,6 +12,7 @@ const password = "couchbase.password"
 const connStr = "couchbase.connString"
 const useAnalytics = "couchbase.useAnalytics"
 const n1qlFallback = "couchbase.n1qlFallback"
+const autoSetup = "couchbase.autoSetup"
 
 type Options struct {
 	ConnStr         string
@@ -20,6 +21,7 @@ type Options struct {
 	BucketName      string
 	UseAnalytics    bool
 	UseN1QLFallback bool
+	AutoSetup       bool
 }
 
 func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
@@ -32,4 +34,5 @@ func (opt *Options) InitFromViper(v *viper.Viper) {
 	opt.BucketName = v.GetString(bucketName)
 	opt.UseAnalytics = v.GetBool(useAnalytics)
 	opt.UseN1QLFallback = v.GetBool(n1qlFallback)
+	opt.AutoSetup = v.GetBool(autoSetup)
 }
