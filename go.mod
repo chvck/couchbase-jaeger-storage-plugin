@@ -8,7 +8,7 @@ require (
 	github.com/golang/protobuf v1.3.1 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/google/uuid v1.1.1 // indirect
-	github.com/hashicorp/go-hclog v0.9.0 // indirect
+	github.com/hashicorp/go-hclog v0.9.0
 	github.com/hashicorp/go-plugin v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/jaegertracing/jaeger v1.11.1-0.20190505210250-7ae02d435b4e

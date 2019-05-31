@@ -5,3 +5,4 @@ couchbase:
   connString: couchbase://localhost
   useAnalytics: true
   n1qlFallback: true
+  autoSetup: false

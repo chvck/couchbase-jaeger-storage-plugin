@@ -1,6 +1,7 @@
 package main
 
 import (
+	hclog "github.com/hashicorp/go-hclog"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
 	"gopkg.in/couchbase/gocb.v1"
@@ -21,6 +22,8 @@ type couchbaseStore struct {
 	bucket       *gocb.Bucket
 	cluster      *gocb.Cluster
 	useAnalytics bool
+	setupErr     error
+	logger       hclog.Logger
 }
 
 func (cs *couchbaseStore) Query(queryString string, params interface{}) (Result, error) {

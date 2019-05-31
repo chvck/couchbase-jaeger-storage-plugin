@@ -1,23 +1,31 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/chvck/couchbase-jaeger-storage-plugin/setup"
+	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
+
+	"github.com/hashicorp/go-hclog"
+
 	"gopkg.in/couchbase/gocb.v1"
 
-	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
 	"github.com/spf13/viper"
 )
 
 func main() {
+	logger := hclog.New(&hclog.LoggerOptions{
+		Level:      hclog.Warn,
+		Output:     os.Stdout,
+		JSONFormat: true,
+		Name:       "jaeger-couchbase",
+	})
+
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "A path to the plugin's configuration file")
 	flag.Parse()
@@ -35,14 +43,15 @@ func main() {
 	if configPath != "" {
 		err := v.ReadInConfig()
 		if err != nil {
-			log.Fatal(err)
+			logger.Error("failed to parse configuration file", "error", err)
+			os.Exit(1)
 		}
 	}
 
 	var options Options
 	options.InitFromViper(v)
 
-	splitConnStr := strings.Split(connStr, "://")
+	splitConnStr := strings.Split(options.ConnStr, "://")
 	var conn string
 	if len(splitConnStr) > 1 {
 		conn = splitConnStr[1]
@@ -51,12 +60,22 @@ func main() {
 	}
 
 	if options.AutoSetup {
-		runSetup(conn, options.Username, options.Password, options.BucketName)
+		timeoutDuration := time.Duration(1 * time.Second)
+		client := http.Client{
+			Timeout: timeoutDuration,
+		}
+
+		err := setup.Run(conn, options.Username, options.Password, options.BucketName, client)
+		if err != nil {
+			logger.Error("Failed to setup cluster", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	cluster, err := gocb.Connect(options.ConnStr)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("failed to create cluster", "error", err)
+		os.Exit(1)
 	}
 
 	err = cluster.Authenticate(gocb.PasswordAuthenticator{
@@ -64,37 +83,47 @@ func main() {
 		Password: options.Password,
 	})
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("failed to authenticate", "error", err)
+		os.Exit(1)
 	}
 
 	bucket, err := cluster.OpenBucket(options.BucketName, "")
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("failed to open bucket", "error", err)
+		os.Exit(1)
 	}
 
-	populateQueries(options.BucketName)
-
-	store := couchbaseStore{bucket: bucket}
-
+	var useAnalytics bool
 	if options.UseAnalytics {
 		err := verifyAnalyticsSupported(conn)
 		if err == nil {
-			store.useAnalytics = true
+			useAnalytics = true
 		} else {
 			if options.UseN1QLFallback {
 				err := verifyN1QLSupported(conn)
 				if err != nil {
-					log.Fatal("Neither analytics or N1QL available")
+					logger.Error("failed to verify n1ql supported", "error", err)
+					os.Exit(1)
 				}
 			} else {
-				log.Fatal("Analytics not available")
+				logger.Error("failed to verify analytics supported", "error", err)
+				os.Exit(1)
 			}
 		}
 	} else {
 		err := verifyN1QLSupported(options.ConnStr)
 		if err != nil {
-			log.Fatal("N1QL not available")
+			logger.Error("failed to verify n1ql supported", "error", err)
+			os.Exit(1)
 		}
+	}
+
+	populateQueries(options.BucketName)
+
+	store := couchbaseStore{
+		logger:       logger,
+		bucket:       bucket,
+		useAnalytics: useAnalytics,
 	}
 
 	grpc.Serve(&store)
@@ -129,119 +158,4 @@ func populateQueries(bucketName string) {
 	queryIDsByDuration = fmt.Sprintf(queryIDsByDuration, bucketName)
 
 	depsSelectStmt = fmt.Sprintf(depsSelectStmt, bucketName)
-}
-
-func runSetup(server, username, password, bucket string) {
-	timeout, err := runRequestWithTimeout("GET", fmt.Sprintf("http://%s:8091", server),
-		"", "", 25*time.Second, nil)
-	if err != nil {
-		panic(err)
-	}
-	if timeout {
-		panic("timed out waiting for cluster to come online")
-	}
-
-	b, err := json.Marshal(map[string]int{
-		"memoryQuota":      512,
-		"indexMemoryQuota": 512,
-	})
-	if err != nil {
-		panic(err)
-	}
-	timeout, err = runRequestWithTimeout("POST", fmt.Sprintf("http://%s:8091/pools/default", server),
-		"", "", 1*time.Second, bytes.NewBuffer(b))
-	if err != nil {
-		panic(err)
-	}
-	if timeout {
-		panic("timed out waiting for cluster to come online")
-	}
-
-	b, err = json.Marshal(map[string]string{
-		"services": "kv,cbas,index",
-	})
-	if err != nil {
-		panic(err)
-	}
-	timeout, err = runRequestWithTimeout("POST", fmt.Sprintf("http://%s:8091/node/controller/setupService", server),
-		"", "", 1*time.Second, bytes.NewBuffer(b))
-	if err != nil {
-		panic(err)
-	}
-	if timeout {
-		panic("timed out waiting for cluster to come online")
-	}
-
-	b, err = json.Marshal(map[string]interface{}{
-		"port":     8091,
-		"password": "password",
-	})
-	if err != nil {
-		panic(err)
-	}
-	timeout, err = runRequestWithTimeout("POST", fmt.Sprintf("http://%s:8091/settings/web", server),
-		"", "", 1*time.Second, bytes.NewBuffer(b))
-	if err != nil {
-		panic(err)
-	}
-	if timeout {
-		panic("timed out waiting for cluster to come online")
-	}
-
-	b, err = json.Marshal(map[string]interface{}{
-		"name":          bucket,
-		"ramQuotaMB":    512,
-		"authType":      "none",
-		"replicaNumber": 0,
-	})
-	if err != nil {
-		panic(err)
-	}
-	timeout, err = runRequestWithTimeout("POST", fmt.Sprintf("http://%s:8091/pools/default/buckets", server),
-		username, password, 1*time.Second, bytes.NewBuffer(b))
-	if err != nil {
-		panic(err)
-	}
-	if timeout {
-		panic("timed out waiting for cluster to come online")
-	}
-}
-
-func runRequestWithTimeout(method, url, username, password string, timeout time.Duration, body io.Reader) (bool, error) {
-	timeoutCh := time.NewTimer(timeout)
-	doneCh := make(chan error)
-	go func() {
-		req, err := http.NewRequest(method, url, body)
-		if err != nil {
-			doneCh <- err
-			return
-		}
-		if username != "" || password != "" {
-			req.SetBasicAuth(username, password)
-		}
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			doneCh <- err
-			return
-		}
-
-		if resp.StatusCode == 200 {
-			doneCh <- nil
-			return
-		}
-
-		time.Sleep(1 * time.Second)
-	}()
-
-	select {
-	case <-timeoutCh.C:
-		return true, nil
-	case err := <-doneCh:
-		if err != nil {
-			return false, err
-		}
-	}
-
-	return false, nil
 }
