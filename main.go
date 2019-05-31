@@ -13,8 +13,6 @@ import (
 	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
 	"github.com/pkg/errors"
 
-	"gopkg.in/couchbase/gocb.v1"
-
 	"github.com/spf13/viper"
 )
 
@@ -52,6 +50,16 @@ func main() {
 	var options Options
 	options.InitFromViper(v)
 
+	store, err := NewCouchbaseStore(options, logger)
+	if err != nil {
+		logger.Error("failed to create couchbase store", "error", err)
+		os.Exit(1)
+	}
+
+	serve(store, options, logger)
+}
+
+func serve(store Store, options Options, logger hclog.Logger) {
 	splitConnStr := strings.Split(options.ConnStr, "://")
 	var conn string
 	if len(splitConnStr) > 1 {
@@ -72,32 +80,15 @@ func main() {
 		}
 	}
 
-	cluster, err := gocb.Connect(options.ConnStr)
-	if err != nil {
-		logger.Error("failed to create cluster", "error", err)
-		os.Exit(1)
-	}
-
-	err = cluster.Authenticate(gocb.PasswordAuthenticator{
-		Username: options.Username,
-		Password: options.Password,
-	})
-	if err != nil {
-		logger.Error("failed to authenticate", "error", err)
-		os.Exit(1)
-	}
-
-	bucket, err := openBucket(cluster, options.BucketName, logger)
+	err := openBucket(store, options.BucketName, logger)
 	if err != nil {
 		logger.Error("failed to open bucket", "error", err)
 		os.Exit(1)
 	}
-
-	var canUseAnalytics bool
 	if options.UseAnalytics {
 		err := verifyAnalyticsSupported(conn)
 		if err == nil {
-			canUseAnalytics = true
+			store.UseAnalytics(true)
 		} else {
 			if options.UseN1QLFallback {
 				err := verifyN1QLSupported(conn)
@@ -117,41 +108,33 @@ func main() {
 			os.Exit(1)
 		}
 	}
-
 	populateQueries(options.BucketName)
-
-	store := couchbaseStore{
-		logger:       logger,
-		bucket:       bucket,
-		useAnalytics: canUseAnalytics,
-	}
-
-	grpc.Serve(&store)
+	grpc.Serve(store)
 }
 
-func openBucket(cluster *gocb.Cluster, bucketName string, logger hclog.Logger) (*gocb.Bucket, error) {
+func openBucket(store Store, bucketName string, logger hclog.Logger) error {
 	timer := time.NewTimer(10 * time.Second)
-	waitCh := make(chan *gocb.Bucket)
+	waitCh := make(chan struct{})
 	go func() {
 		for {
-			bucket, err := cluster.OpenBucket(bucketName, "")
+			err := store.Connect(bucketName)
 			if err != nil {
 				logger.Warn("error opening bucket", "reason", err)
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 
-			waitCh <- bucket
+			waitCh <- struct{}{}
 			return
 		}
 	}()
 
 	select {
 	case <-timer.C:
-		return nil, errors.New("timed out trying to open bucket")
-	case bucket := <-waitCh:
+		return errors.New("timed out trying to open bucket")
+	case <-waitCh:
 		timer.Stop()
-		return bucket, nil
+		return nil
 	}
 }
 
