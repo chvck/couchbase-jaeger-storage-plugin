@@ -8,11 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
+
 	"github.com/pkg/errors"
 )
 
-func Run(server, username, password, bucket string, client http.Client) error {
-	err := waitForCluster(server, 45*time.Second, client)
+func Run(server, username, password, bucket string, client http.Client, logger hclog.Logger) error {
+	err := waitForCluster(server, 45*time.Second, client, logger)
 	if err != nil {
 		return errors.Wrap(err, "failed to wait for cluster to come online")
 	}
@@ -104,38 +106,41 @@ func doHTTP(client http.Client, method, uri, contentType, username, password str
 	return nil
 }
 
-func waitForCluster(server string, timeout time.Duration, client http.Client) error {
+func waitForCluster(server string, timeout time.Duration, client http.Client, logger hclog.Logger) error {
 	timeoutCh := time.NewTimer(timeout)
 	doneCh := make(chan error)
 	go func() {
-		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s:8091/ui/index.html", server), nil)
-		if err != nil {
-			doneCh <- err
-			return
-		}
+		for {
+			req, err := http.NewRequest("GET", fmt.Sprintf("http://%s:8091/ui/index.html", server), nil)
+			if err != nil {
+				doneCh <- err
+				return
+			}
 
-		resp, err := client.Do(req)
-		if err != nil && !strings.Contains(err.Error(), "connection refused") { // :(
-			doneCh <- err
-			return
-		}
+			resp, err := client.Do(req)
+			if err != nil {
+				if strings.Contains(err.Error(), "connection refused") { // :(
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
 
-		if resp.StatusCode == 200 {
-			doneCh <- nil
-			return
-		}
+				doneCh <- err
+				return
+			}
 
-		time.Sleep(500 * time.Millisecond)
+			if resp.StatusCode == 200 {
+				doneCh <- nil
+				return
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
 	}()
 
 	select {
 	case <-timeoutCh.C:
 		return errors.New("timed out")
 	case err := <-doneCh:
-		if err != nil {
-			return err
-		}
+		return err
 	}
-
-	return nil
 }

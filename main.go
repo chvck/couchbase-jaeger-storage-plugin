@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/chvck/couchbase-jaeger-storage-plugin/setup"
-	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
-
 	"github.com/hashicorp/go-hclog"
+	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
+	"github.com/pkg/errors"
 
 	"gopkg.in/couchbase/gocb.v1"
 
@@ -21,9 +21,8 @@ import (
 func main() {
 	logger := hclog.New(&hclog.LoggerOptions{
 		Level:      hclog.Warn,
-		Output:     os.Stdout,
-		JSONFormat: true,
 		Name:       "jaeger-couchbase",
+		JSONFormat: true,
 	})
 
 	var configPath string
@@ -39,6 +38,8 @@ func main() {
 
 	v.SetDefault(bucketName, "default")
 	v.SetDefault(connStr, "couchbase://localhost")
+	v.SetDefault(useAnalytics, true)
+	v.SetDefault(n1qlFallback, true)
 
 	if configPath != "" {
 		err := v.ReadInConfig()
@@ -60,14 +61,13 @@ func main() {
 	}
 
 	if options.AutoSetup {
-		timeoutDuration := time.Duration(1 * time.Second)
+		timeoutDuration := time.Duration(5 * time.Second)
 		client := http.Client{
 			Timeout: timeoutDuration,
 		}
 
-		err := setup.Run(conn, options.Username, options.Password, options.BucketName, client)
+		err := setup.Run(conn, options.Username, options.Password, options.BucketName, client, logger)
 		if err != nil {
-			logger.Error("Failed to setup cluster", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -87,17 +87,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	bucket, err := cluster.OpenBucket(options.BucketName, "")
+	bucket, err := openBucket(cluster, options.BucketName, logger)
 	if err != nil {
 		logger.Error("failed to open bucket", "error", err)
 		os.Exit(1)
 	}
 
-	var useAnalytics bool
+	var canUseAnalytics bool
 	if options.UseAnalytics {
 		err := verifyAnalyticsSupported(conn)
 		if err == nil {
-			useAnalytics = true
+			canUseAnalytics = true
 		} else {
 			if options.UseN1QLFallback {
 				err := verifyN1QLSupported(conn)
@@ -123,28 +123,75 @@ func main() {
 	store := couchbaseStore{
 		logger:       logger,
 		bucket:       bucket,
-		useAnalytics: useAnalytics,
+		useAnalytics: canUseAnalytics,
 	}
 
 	grpc.Serve(&store)
 }
 
+func openBucket(cluster *gocb.Cluster, bucketName string, logger hclog.Logger) (*gocb.Bucket, error) {
+	timer := time.NewTimer(10 * time.Second)
+	waitCh := make(chan *gocb.Bucket)
+	go func() {
+		for {
+			bucket, err := cluster.OpenBucket(bucketName, "")
+			if err != nil {
+				logger.Warn("error opening bucket", "reason", err)
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+
+			waitCh <- bucket
+			return
+		}
+	}()
+
+	select {
+	case <-timer.C:
+		return nil, errors.New("timed out trying to open bucket")
+	case bucket := <-waitCh:
+		timer.Stop()
+		return bucket, nil
+	}
+}
+
 func verifyServiceSupported(conn, port, endpoint string) error {
-	_, err := http.Get(fmt.Sprintf("http://%s:%s/%s", conn, port, endpoint))
-	if err != nil {
+	timer := time.NewTimer(20 * time.Second)
+	waitCh := make(chan error)
+	go func() {
+		for {
+			resp, err := http.Get(fmt.Sprintf("http://%s:%s/%s", conn, port, endpoint))
+			if err != nil {
+				timer.Stop()
+				waitCh <- err
+				return
+			}
+
+			if resp.StatusCode != 200 {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+
+			waitCh <- nil
+			return
+		}
+	}()
+
+	select {
+	case <-timer.C:
+		return errors.New("timed out waiting for service")
+	case err := <-waitCh:
+		timer.Stop()
 		return err
 	}
-
-	// the service exists so let's assume it's supported
-	return nil
 }
 
 func verifyAnalyticsSupported(connStr string) error {
-	return verifyServiceSupported(connStr, "8095", "/analytics/config/node")
+	return verifyServiceSupported(connStr, "8091", "_p/cbas-admin/admin/ping")
 }
 
 func verifyN1QLSupported(connStr string) error {
-	return verifyServiceSupported(connStr, "8093", "/query/service")
+	return verifyServiceSupported(connStr, "8091", "_p/query/admin/ping")
 }
 
 func populateQueries(bucketName string) {
