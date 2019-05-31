@@ -3,6 +3,8 @@ Couchbase Jaeger Storage Plugin
 
 This plugin allows the reading and writing of spans, and the reading of dependencies to/from Jaeger over gRPC.
 
+> WARNING: This plugin is still under development.
+
 Usage
 -----
 To use this plugin you must first build (`go build`) and then create a `config.yaml` file based off of the example file.
