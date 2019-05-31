@@ -1,6 +1,7 @@
-package main
+package plugin
 
 import (
+	"github.com/chvck/couchbase-jaeger-storage-plugin/options"
 	"github.com/hashicorp/go-hclog"
 	"github.com/jaegertracing/jaeger/storage/dependencystore"
 	"github.com/jaegertracing/jaeger/storage/spanstore"
@@ -31,7 +32,7 @@ type couchbaseStore struct {
 	logger       hclog.Logger
 }
 
-func NewCouchbaseStore(options Options, logger hclog.Logger) (*couchbaseStore, error) {
+func NewCouchbaseStore(options options.Options, logger hclog.Logger) (*couchbaseStore, error) {
 	cluster, err := gocb.Connect(options.ConnStr)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create cluster")

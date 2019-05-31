@@ -8,12 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chvck/couchbase-jaeger-storage-plugin/httpclient"
+
 	"github.com/hashicorp/go-hclog"
 
 	"github.com/pkg/errors"
 )
 
-func Run(server, username, password, bucket string, client http.Client, logger hclog.Logger) error {
+func Run(server, username, password, bucket string, client httpclient.Client, logger hclog.Logger) error {
 	err := waitForCluster(server, 45*time.Second, client, logger)
 	if err != nil {
 		return errors.Wrap(err, "failed to wait for cluster to come online")
@@ -74,7 +76,7 @@ func Run(server, username, password, bucket string, client http.Client, logger h
 	return nil
 }
 
-func doHTTP(client http.Client, method, uri, contentType, username, password string, body io.Reader) error {
+func doHTTP(client httpclient.Client, method, uri, contentType, username, password string, body io.Reader) error {
 	req, err := http.NewRequest(
 		method,
 		uri,
@@ -94,7 +96,7 @@ func doHTTP(client http.Client, method, uri, contentType, username, password str
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= 300 && resp.StatusCode != 401 {
 		dump, err := httputil.DumpResponse(resp, true)
 		if err != nil {
 			return errors.New("request failed, no error detail could be determined")
@@ -106,7 +108,7 @@ func doHTTP(client http.Client, method, uri, contentType, username, password str
 	return nil
 }
 
-func waitForCluster(server string, timeout time.Duration, client http.Client, logger hclog.Logger) error {
+func waitForCluster(server string, timeout time.Duration, client httpclient.Client, logger hclog.Logger) error {
 	timeoutCh := time.NewTimer(timeout)
 	doneCh := make(chan error)
 	go func() {
@@ -120,6 +122,7 @@ func waitForCluster(server string, timeout time.Duration, client http.Client, lo
 			resp, err := client.Do(req)
 			if err != nil {
 				if strings.Contains(err.Error(), "connection refused") { // :(
+					logger.Warn("Connection was refused whilst waiting for cluster, retrying")
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
@@ -133,7 +136,8 @@ func waitForCluster(server string, timeout time.Duration, client http.Client, lo
 				return
 			}
 
-			time.Sleep(500 * time.Millisecond)
+			logger.Warn("Status code whilst waiting for cluster was non-200, retrying")
+			time.Sleep(1000 * time.Millisecond)
 		}
 	}()
 

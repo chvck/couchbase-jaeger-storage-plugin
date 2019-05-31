@@ -1,4 +1,4 @@
-package main
+package options
 
 import (
 	"flag"
@@ -28,6 +28,11 @@ func (opt *Options) AddFlags(flagSet *flag.FlagSet) {
 }
 
 func (opt *Options) InitFromViper(v *viper.Viper) {
+	v.SetDefault(bucketName, "default")
+	v.SetDefault(connStr, "couchbase://localhost")
+	v.SetDefault(useAnalytics, true)
+	v.SetDefault(n1qlFallback, true)
+
 	opt.ConnStr = v.GetString(connStr)
 	opt.Username = v.GetString(username)
 	opt.Password = v.GetString(password)
