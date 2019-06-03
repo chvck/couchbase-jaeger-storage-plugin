@@ -29,4 +29,10 @@ To use Docker with this plugin for evaluation purposes requires the plugin be bu
 `couchbase-jaeger-storage-plugin-linux`, or just run `make buildlinux`. It also currently requires a custom image of Jaeger
 to be built with the tag `jaeger:1.12`, the custom built image requires Jaeger to support gRPC plugins. 
 Once the binary and Jaeger image are created you can just use `docker build` and `docker run` as usual. This will spin up
-Jaeger using the plugin for storage. 
+Jaeger using the plugin for storage.
+
+License
+--------
+Copyright 2019 Couchbase Inc.
+
+Licensed under the Apache License, Version 2.0.
