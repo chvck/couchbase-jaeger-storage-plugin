@@ -61,7 +61,7 @@ file provided to Jaeger at runtime, or they can be set via environment variables
 | connString | COUCHBASE_CONNSTRING | The connection string to use for connecting to Couchbase Server (e.g. `couchbase://localhost`). |
 | useAnalytics | COUCHBASE_USEANALYTICS | Sets whether or not to use Analytics for queries (note: this an Enterprise Edition feature). The plugin expects a dataset with the same as the bucket to be setup. |
 | n1qlFallback | COUCHBASE_N1QLFALLBACK | If the analytics engine cannot be reached at start up then fallback to using N1QL for queries. The plugin expects at least a primary index to exist on the bucket. |
-| autoSetup | COUCHBASE_AUTOSETUP | This is primarily aimed at `docker compose` support. If set then the plugin will expect an uninitialized Couchbase Server cluster and will attempt to set it up. |
+| autoSetup | COUCHBASE_AUTOSETUP | This is primarily aimed at `docker compose` support. If set then the plugin will expect an uninitialized Couchbase Server cluster and will attempt to set it up and enable querying through analytics. |
 
 
 

@@ -13,7 +13,7 @@ import (
 
 func VerifyServices(opts options.Options, httpClient httpclient.Client, conn string, store *couchbaseStore, logger hclog.Logger) error {
 	if opts.UseAnalytics {
-		err := verifyAnalyticsSupported(httpClient, conn, logger)
+		err := VerifyAnalyticsSupported(httpClient, conn, logger)
 		if err == nil {
 			store.UseAnalytics(true)
 		} else {
@@ -104,7 +104,7 @@ func verifyServiceSupported(client httpclient.Client, conn, port, endpoint strin
 	}
 }
 
-func verifyAnalyticsSupported(client httpclient.Client, connStr string, logger hclog.Logger) error {
+func VerifyAnalyticsSupported(client httpclient.Client, connStr string, logger hclog.Logger) error {
 	return verifyServiceSupported(client, connStr, "8091", "_p/cbas-admin/admin/ping", logger)
 }
 

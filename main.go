@@ -68,7 +68,7 @@ func main() {
 	}
 
 	if options.AutoSetup {
-		err := setup.Run(conn, options.Username, options.Password, options.BucketName, cli, logger)
+		err := setup.Run(options, conn, cli, logger)
 		if err != nil {
 			logger.Error("failed to run setup", "error", err)
 			os.Exit(1)
