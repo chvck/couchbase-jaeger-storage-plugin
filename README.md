@@ -15,7 +15,7 @@ is already created. In the N1QL case a primary index (at the very least) should 
 
 Docker
 ------
-The plugin contains support for a `Dockerfile` providing an image based of off the Jaeger [all-in-one](https://hub.docker.com/r/jaegertracing/all-in-one)
+The plugin contains support for a `Dockerfile`, providing an image based upon the Jaeger [all-in-one](https://hub.docker.com/r/jaegertracing/all-in-one)
 image. To build and run this image:
 
 1. Build the plugin for a Linux target with the name `couchbase-jaeger-storage-plugin-linux`.
@@ -43,7 +43,7 @@ image. To build and run this image:
 
 Docker Compose
 --------------
-You can also use `docker compose` to run Couchbase Server Enterprise Edition and Jaeger (setup to run this plugin) together,
+You can also use `docker compose` to run Couchbase Server Enterprise Edition and Jaeger (set up to run this plugin) together,
 
 > The docker-compose setup provided should be used __only__ for experimentation purposes. See the [Couchbase blog](https://blog.couchbase.com/couchbase-server-editions-explained-open-source-community-edition-and-enterprise-edition/)
 for information on licensing.
@@ -75,11 +75,11 @@ file provided to Jaeger at runtime, or they can be set via environment variables
 
 Building
 --------
-To use this plugin without Docker you must first build (`go build`) and then create a `config.yaml` file based off of the example file.
+To use this plugin without Docker you must first build (`go build`) and then create a `config.yaml` file based upon the example file.
 Once complete you need to run a version of Jaeger that supports gRPC plugins.
 
 
-1. Clone this repository and build the plugin. You'll need a version of Go which supports modules and have modules enabled:
+1. Clone this repository and build the plugin. You'll need a version of Go which supports modules, and have modules enabled:
     ```
     export GO111MODULE=on
     go build
