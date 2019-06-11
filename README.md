@@ -11,11 +11,11 @@ Docker
 The plugin contains support for a `Dockerfile` providing an image based of off the Jaeger [all-in-one](https://hub.docker.com/r/jaegertracing/all-in-one)
 image. To build and run this image:
 
-1. Build the plugin for a Linux target with the name `couchbase-jaeger-storage-plugin-linux`, or just run `make buildlinux` 
-from any platform supporting make. 
+1. Build the plugin for a Linux target with the name `couchbase-jaeger-storage-plugin-linux`.
+    * Run `make buildlinux` from any platform supporting make. 
     * If you do not have make then you can use `export GOOS=linux; go build -o couchbase-jaeger-storage-plugin-linux`.
 
-2. Update the `Dockerfile` with your own values or set the environment values and build the image: `docker build . -t couchbase-jaeger-storage-plugin`.
+2. Update the `Dockerfile` with your own values or set the environment variables (covered later) and build the image: `docker build . -t couchbase-jaeger-storage-plugin`.
 
 3. Run it! 
     ```
@@ -32,7 +32,8 @@ from any platform supporting make.
     ```
     * See the [Jaeger docs](https://www.jaegertracing.io/docs/1.12/getting-started/) for information on these ports and general Jaeger Docker usage.
 
-
+Docker Compose
+--------------
 You can also use `docker compose` to run Couchbase Server Enterprise Edition and Jaeger (setup to run this plugin) together,
 
 > The docker-compose setup provided should be used __only__ for evaluation purposes. See the [Couchbase blog](https://blog.couchbase.com/couchbase-server-editions-explained-open-source-community-edition-and-enterprise-edition/)
@@ -47,8 +48,24 @@ docker-compose up
 ```
 
 
-Usage
------
+Configuration
+--------------
+There are several configuration options that can be used for setting up the plugin. These can be set within the `config.yaml`
+file provided to Jaeger at runtime, or they can be set via environment variables set in the same shell as the Jaeger runtime.
+
+| Config file | Environment | Description |
+|---|---|---|
+| bucket | COUCHBASE_BUCKET | The name of the bucket to use. |
+| username | COUCHBASE_USERNAME | The username to use for authentication. |
+| password | COUCHBASE_PASSWORD | The password to use for authentication. |
+| connString | COUCHBASE_CONNSTRING | The connection string to use for connecting to Couchbase Server (e.g. `couchbase://localhost`). |
+| useAnalytics | COUCHBASE_USEANALYTICS | Sets whether or not to use Analytics for queries (note: this an Enterprise Edition feature). The plugin expects a dataset with the same as the bucket to be setup. |
+| n1qlFallback | COUCHBASE_N1QLFALLBACK | If the analytics engine cannot be reached at start up then fallback to using N1QL for queries. The plugin expects at least a primary index to exist on the bucket. |
+| autoSetup | COUCHBASE_AUTOSETUP | This is primarily aimed at `docker compose` support. If set then the plugin will expect an uninitialized Couchbase Server cluster and will attempt to set it up and enable querying through analytics. |
+
+
+Building
+--------
 To use this plugin without Docker you must first build (`go build`) and then create a `config.yaml` file based off of the example file.
 Once complete you need to run a version of Jaeger that supports gRPC plugins.
 
@@ -80,23 +97,6 @@ Once complete you need to run a version of Jaeger that supports gRPC plugins.
 
 Note: This plugin supports setting any config file values can also be as environment variables in the shell in which Jaeger 
 is run, see `Dockerfile` for example usage of this.
-
-
-Configuration
---------------
-There are several configuration options that can be used for setting up the plugin. These can be set within the `config.yaml`
-file provided to Jaeger at runtime, or they can be set via environment variables set in the same shell as the Jaeger runtime.
-
-| Config file | Environment | Description |
-|---|---|---|
-| bucket | COUCHBASE_BUCKET | The name of the bucket to use. |
-| username | COUCHBASE_USERNAME | The username to use for authentication. |
-| password | COUCHBASE_PASSWORD | The password to use for authentication. |
-| connString | COUCHBASE_CONNSTRING | The connection string to use for connecting to Couchbase Server (e.g. `couchbase://localhost`). |
-| useAnalytics | COUCHBASE_USEANALYTICS | Sets whether or not to use Analytics for queries (note: this an Enterprise Edition feature). The plugin expects a dataset with the same as the bucket to be setup. |
-| n1qlFallback | COUCHBASE_N1QLFALLBACK | If the analytics engine cannot be reached at start up then fallback to using N1QL for queries. The plugin expects at least a primary index to exist on the bucket. |
-| autoSetup | COUCHBASE_AUTOSETUP | This is primarily aimed at `docker compose` support. If set then the plugin will expect an uninitialized Couchbase Server cluster and will attempt to set it up and enable querying through analytics. |
-
 
 License
 --------
