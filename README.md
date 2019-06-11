@@ -5,23 +5,70 @@ This plugin allows the reading and writing of spans, and the reading of dependen
 
 > WARNING: This plugin is still under development.
 
+
+Docker
+------
+The plugin contains support for a `Dockerfile` providing an image based of off the Jaeger [all-in-one](https://hub.docker.com/r/jaegertracing/all-in-one)
+image. To build and run this image:
+
+1. Build the plugin for a Linux target with the name `couchbase-jaeger-storage-plugin-linux`, or just run `make buildlinux` 
+from any platform supporting make. 
+    * If you do not have make then you can use `export GOOS=linux; go build -o couchbase-jaeger-storage-plugin-linux`.
+
+2. Update the `Dockerfile` with your own values or set the environment values and build the image: `docker build . -t couchbase-jaeger-storage-plugin`.
+
+3. Run it! 
+    ```
+    docker run -d --name couchbase-jaeger-storage-plugin \
+      -e COLLECTOR_ZIPKIN_HTTP_PORT=9411 \
+      -p 5775:5775/udp \
+      -p 6831:6831/udp \
+      -p 6832:6832/udp \
+      -p 5778:5778 \
+      -p 16686:16686 \
+      -p 14268:14268 \
+      -p 9411:9411 \
+      couchbase-jaeger-storage-plugin
+    ```
+    * See the [Jaeger docs](https://www.jaegertracing.io/docs/1.12/getting-started/) for information on these ports and general Jaeger Docker usage.
+
+
+You can also use `docker compose` to run Couchbase Server Enterprise Edition and Jaeger (setup to run this plugin) together,
+
+> The docker-compose setup provided should be used __only__ for evaluation purposes. See the [Couchbase blog](https://blog.couchbase.com/couchbase-server-editions-explained-open-source-community-edition-and-enterprise-edition/)
+for information on licensing.
+ 
+ Running with `docker-compose` will automatically setup a Couchbase Server single node cluster for you with some basic default values, and analytics support.
+The Couchbase UI will be accessible on http://localhost:8091, and the Jaeger UI will be accessible on http://localhost:16686.
+
+```
+docker-compose build
+docker-compose up
+```
+
+
 Usage
 -----
-To use this plugin you must first build (`go build`) and then create a `config.yaml` file based off of the example file.
+To use this plugin without Docker you must first build (`go build`) and then create a `config.yaml` file based off of the example file.
 Once complete you need to run a version of Jaeger that supports gRPC plugins.
 
 
 1. Clone this repository and build the plugin. You'll need a version of Go which supports modules and have modules enabled:
-    * `export GO111MODULE=on`
-    * `go build`
-    * `cp config.yaml.example config.yaml`
+    ```
+    export GO111MODULE=on
+    go build
+    cp config.yaml.example config.yaml
+    ```
+    
     * Update `config.yaml` with your own values.
 
-2. At time of writing Jaeger does not have a released version with storage plugin gRPC support so it's easiest to checkout
-and build with latest. (It's also easiest to use `all-in-one` for testing).
-    * `git clone https://github.com/jaegertracing/jaeger`
-    * `cd https://github.com/jaegertracing/jaeger/cmd/all-in-one`
-    * `go build`
+2. Jaeger supports storage plugin gRPC as of version 1.12. (It's easiest to use `all-in-one` for testing).
+    ```
+    git clone https://github.com/jaegertracing/jaeger
+    cd https://github.com/jaegertracing/jaeger/cmd/all-in-one
+    git checkout v1.12.0
+    go build
+    ```
 
 3. Run it! When running Jaeger there are two command line flags that can be used to configure the plugin. 
     * `--grpc-storage-plugin.binary` is required and is the path to the plugin **binary**.
@@ -33,19 +80,6 @@ and build with latest. (It's also easiest to use `all-in-one` for testing).
 
 Note: This plugin supports setting any config file values can also be as environment variables in the shell in which Jaeger 
 is run, see `Dockerfile` for example usage of this.
-
-
-Docker
-------
-To use Docker with this plugin for evaluation purposes requires the plugin be built for a Linux target with the name
-`couchbase-jaeger-storage-plugin-linux`, or just run `make buildlinux`. It also currently requires a custom image of Jaeger
-to be built with the tag `jaeger:1.12`, the custom built image requires Jaeger to support gRPC plugins. 
-Once the binary and Jaeger image are created you can just use `docker build` and `docker run` as usual. This will spin up
-Jaeger using the plugin for storage.
-
-You can also use `docker compose` to run Couchbase Server Enterprise Edition and Jaeger (setup to run this plugin) together,
-this should be used only for evaluation purposes. See the [Couchbase blog](https://blog.couchbase.com/couchbase-server-editions-explained-open-source-community-edition-and-enterprise-edition/)
-for information on licensing.
 
 
 Configuration
@@ -62,9 +96,6 @@ file provided to Jaeger at runtime, or they can be set via environment variables
 | useAnalytics | COUCHBASE_USEANALYTICS | Sets whether or not to use Analytics for queries (note: this an Enterprise Edition feature). The plugin expects a dataset with the same as the bucket to be setup. |
 | n1qlFallback | COUCHBASE_N1QLFALLBACK | If the analytics engine cannot be reached at start up then fallback to using N1QL for queries. The plugin expects at least a primary index to exist on the bucket. |
 | autoSetup | COUCHBASE_AUTOSETUP | This is primarily aimed at `docker compose` support. If set then the plugin will expect an uninitialized Couchbase Server cluster and will attempt to set it up and enable querying through analytics. |
-
-
-
 
 
 License

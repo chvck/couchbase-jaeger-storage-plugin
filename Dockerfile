@@ -1,4 +1,4 @@
-FROM jaeger:1.12
+FROM jaegertracing/all-in-one:1.12
 
 ENV SPAN_STORAGE_TYPE=grpc-plugin
 ENV COUCHBASE_USERNAME=""
