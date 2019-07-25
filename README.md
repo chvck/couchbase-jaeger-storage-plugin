@@ -5,6 +5,13 @@ This plugin allows the reading and writing of spans, and the reading of dependen
 
 > WARNING: This plugin is still under development.
 
+Couchbase Setup
+---------------
+In order to use this plugin with Couchbase it is required that either Couchbase Analytics or N1QL is setup and running
+on the server. In the Analytics case it is required that a dataset with the same of the bucket provided to the plugin
+is already created. In the N1QL case a primary index (at the very least) should be created.
+
+> Further advice on indexes will be provided in time.
 
 Docker
 ------
@@ -21,6 +28,8 @@ image. To build and run this image:
     ```
     docker run -d --name couchbase-jaeger-storage-plugin \
       -e COLLECTOR_ZIPKIN_HTTP_PORT=9411 \
+      -e COUCHBASE_USERNAME="username" \
+      -e COUCHBASE_PASSWORD="password" \
       -p 5775:5775/udp \
       -p 6831:6831/udp \
       -p 6832:6832/udp \
@@ -30,13 +39,13 @@ image. To build and run this image:
       -p 9411:9411 \
       couchbase-jaeger-storage-plugin
     ```
-    * See the [Jaeger docs](https://www.jaegertracing.io/docs/1.12/getting-started/) for information on these ports and general Jaeger Docker usage.
+    * See the [Jaeger docs](https://www.jaegertracing.io/docs/1.13/getting-started/) for information on these ports and general Jaeger Docker usage.
 
 Docker Compose
 --------------
 You can also use `docker compose` to run Couchbase Server Enterprise Edition and Jaeger (setup to run this plugin) together,
 
-> The docker-compose setup provided should be used __only__ for evaluation purposes. See the [Couchbase blog](https://blog.couchbase.com/couchbase-server-editions-explained-open-source-community-edition-and-enterprise-edition/)
+> The docker-compose setup provided should be used __only__ for experimentation purposes. See the [Couchbase blog](https://blog.couchbase.com/couchbase-server-editions-explained-open-source-community-edition-and-enterprise-edition/)
 for information on licensing.
  
  Running with `docker-compose` will automatically setup a Couchbase Server single node cluster for you with some basic default values, and analytics support.
